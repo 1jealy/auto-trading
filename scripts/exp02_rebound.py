@@ -89,12 +89,15 @@ def main(period: str) -> None:
 
 
 def episode_returns(episodes: list[dict], prices: Prices, start: str, end: str) -> pd.DataFrame:
-    """보유 1건마다: 신호 다음 날 시가에 사서, 마지막 보유 결정 다음 날 시가에 판 수익(비용 뺀 것)."""
+    """보유 1건마다: 신호 다음 날 시가에 사서 판 수익(비용 뺀 것).
+
+    마지막 보유 결정일(last_decision) 다음 날 결정에서 빠지고, 그 다음 날 시가에 팔린다 → +2.
+    """
     idx = prices.dates
     rows = []
     for e in episodes:
         buy_i = idx.get_loc(e["signal_date"]) + 1
-        sell_i = idx.get_loc(e["last_decision"]) + 1
+        sell_i = idx.get_loc(e["last_decision"]) + 2
         if sell_i >= len(idx) or not (pd.Timestamp(start) <= idx[buy_i] <= pd.Timestamp(end)):
             continue
         o = prices.open[e["ticker"]]
