@@ -137,6 +137,20 @@ def test_halted_ticker_is_not_traded():
     assert set(day1["ticker"]) == {"A"}
 
 
+def test_small_drift_is_not_traded_but_full_exit_is():
+    dates = pd.bdate_range("2020-01-01", periods=5)
+    close = pd.DataFrame({"A": [100.0, 100, 103, 103, 103], "B": [100.0] * 5}, index=dates)
+    prices = Prices(close.copy(), close)
+    # 0일: A·B 50%씩 → 2일: 같은 비중 유지(A가 3% 올라 약간 어긋남) → 3일: B 전량 매도
+    strat = Scheduled({0: {"A": 0.5, "B": 0.5}, 3: {"A": 0.5}})
+    result = run_backtest(prices, strat, rebalance="D", costs=CostModel.zero(),
+                          integer_shares=False, min_trade_frac=0.05)
+    days = result.trades.groupby("date")["ticker"].apply(list)
+    assert list(days.index) == [dates[1], dates[4]]  # 2·3일엔 작은 차이라 거래 없음
+    assert days[dates[4]] == ["B"]
+    assert result.trades.iloc[-1]["side"] == "sell"
+
+
 @pytest.mark.parametrize(
     "weights, message",
     [({"A": 0.7, "B": 0.6}, "1을 넘습니다"), ({"A": -0.1}, "음수"), ({"Z": 0.5}, "없는 종목")],

@@ -55,7 +55,13 @@ def run_backtest(
     costs: CostModel = CostModel(),
     initial_cash: float = 10_000_000,
     integer_shares: bool = True,
+    min_trade_frac: float = 0.0,
 ) -> BacktestResult:
+    """min_trade_frac: 목표와의 차이가 전체 자산의 이 비율보다 작으면 거래하지 않는다.
+    (전량 매도는 항상 실행) 들고 있는 종목을 매일 조금씩 다시 맞추는 비용을 막는 용도.
+    """
+    if not 0 <= min_trade_frac < 1:
+        raise ValueError("min_trade_frac 은 0 이상 1 미만이어야 합니다")
     dates = prices.dates
     if len(dates) < 2:
         raise ValueError("백테스트에는 최소 2거래일이 필요합니다")
@@ -85,6 +91,7 @@ def run_backtest(
                 shares=shares,
                 costs=costs,
                 integer_shares=integer_shares,
+                min_trade_frac=min_trade_frac,
             )
             trades.extend(day_trades)
             total_cost += day_cost
@@ -132,6 +139,7 @@ def _execute(
     shares: pd.Series,
     costs: CostModel,
     integer_shares: bool,
+    min_trade_frac: float = 0.0,
 ) -> tuple[float, list[dict], float]:
     """목표 비중으로 리밸런싱. shares 는 제자리에서 갱신하고 (현금, 거래내역, 비용)을 반환."""
     tradable = open_px.notna() & (open_px > 0)
@@ -141,6 +149,10 @@ def _execute(
     port_value = cash + float(held_value)
     target_value = target.reindex(shares.index).fillna(0.0) * port_value
     diff = target_value - shares * px.fillna(0.0)
+    if min_trade_frac > 0:
+        small = diff.abs() < min_trade_frac * port_value
+        full_exit = (target_value <= _EPS) & (shares > _EPS)
+        diff = diff.where(~small | full_exit, 0.0)
 
     trades: list[dict] = []
     total_cost = 0.0

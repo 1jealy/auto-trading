@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd  # noqa: E402
 
 from autotrade import CostModel, compare, run_backtest  # noqa: E402
+from autotrade.checks import warn_big_jumps, warn_suspicious_fills  # noqa: E402
 from autotrade.data import load_prices  # noqa: E402
 from autotrade.strategies import AssetSwitching, BuyAndHold  # noqa: E402
 
@@ -38,7 +39,7 @@ def main(period: str) -> None:
     start, end = PERIODS[period]
     # 연습 기간에는 그 이후 데이터를 아예 불러오지 않는다
     prices = load_prices(CANDIDATES + [SAFE], DATA_START, end)
-    _check_big_jumps(prices)
+    warn_big_jumps(prices)
 
     switching = run_backtest(prices, AssetSwitching(CANDIDATES, SAFE), "M", COSTS)
     kospi = run_backtest(prices.select(["069500"]), BuyAndHold(), "M", COSTS)
@@ -63,25 +64,7 @@ def main(period: str) -> None:
     print("\n보유 개월 수:", held.value_counts().to_dict())
     print(f"매매 {len(switching.trades.loc[switching.trades['date'] >= start])}건, "
           f"전체 비용 {switching.total_cost:,.0f}원 (원금 1,000만 원 기준)")
-    _check_suspicious_fills(prices, switching.trades)
-
-
-def _check_big_jumps(prices) -> None:
-    jumps = prices.close.pct_change().abs().stack()
-    big = jumps[jumps > 0.15]
-    if not big.empty:
-        print("경고: 하루 15% 넘는 가격 변화 — 분할 등 데이터 문제일 수 있음\n", big, "\n")
-
-
-def _check_suspicious_fills(prices, trades: pd.DataFrame) -> None:
-    """시가만 튀고 종가는 제자리인 날(데이터 오류 의심)에 체결된 매매를 경고한다."""
-    prev_close = prices.close.shift(1)
-    open_gap = (prices.open / prev_close - 1).abs()
-    day_move = (prices.close / prev_close - 1).abs()
-    suspicious = (open_gap > 0.03) & (day_move < 0.015)
-    hits = [(d, t) for d, t in zip(trades["date"], trades["ticker"]) if suspicious.loc[d, t]]
-    if hits:
-        print("\n경고: 데이터 오류가 의심되는 시가에 체결된 매매:", hits)
+    warn_suspicious_fills(prices, switching.trades)
 
 
 if __name__ == "__main__":
