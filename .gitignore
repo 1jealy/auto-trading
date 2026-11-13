@@ -1,0 +1,21 @@
+# 비밀 정보 — 절대 커밋 금지
+.env
+*.key
+*secret*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# 데이터/결과물 (용량 크고 재생성 가능)
+data/cache/
+results/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
