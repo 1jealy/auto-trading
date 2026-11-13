@@ -79,9 +79,11 @@ def load_prices(
         raise ValueError("drop_no_trade 에는 with_volume=True 가 필요합니다")
     tickers = list(dict.fromkeys(tickers))  # 중복 제거, 순서 유지
 
+    cols = ["Open", "Close", "Volume"] if with_volume else ["Open", "Close"]
+
     def fetch(t: str) -> tuple[str, pd.DataFrame | None, str | None]:
         try:
-            return t, _load_one(t, start, end, cache_dir, with_volume), None
+            return t, _load_one(t, start, end, cache_dir, cols), None
         except Exception as e:  # noqa: BLE001
             if not skip_errors:
                 raise
@@ -114,10 +116,19 @@ def load_prices(
     return Prices(open_, close, volume)
 
 
+def load_ohlc(ticker: str, start: str, end: str, cache_dir: Path = DEFAULT_CACHE_DIR) -> pd.DataFrame:
+    """종목 하나의 시가·고가·저가·종가·거래량 표. 0 이하 가격은 결측으로 처리."""
+    cols = ["Open", "High", "Low", "Close", "Volume"]
+    df = _load_one(ticker, start, end, cache_dir, cols).sort_index()
+    prices = ["Open", "High", "Low", "Close"]
+    df[prices] = df[prices].where(df[prices] > 0)
+    df.index.name = "Date"
+    return df
+
+
 def _load_one(
-    ticker: str, start: str, end: str | None, cache_dir: Path, with_volume: bool
+    ticker: str, start: str, end: str | None, cache_dir: Path, cols: list[str]
 ) -> pd.DataFrame:
-    cols = ["Open", "Close", "Volume"] if with_volume else ["Open", "Close"]
     cache_file = cache_dir / f"{ticker}_{start}_{end}.csv" if end else None
     if cache_file is not None and cache_file.exists():
         cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
@@ -129,7 +140,7 @@ def _load_one(
     df = fdr.DataReader(ticker, start, end)
     if df.empty:
         raise ValueError(f"{ticker}: {start}~{end} 데이터가 없습니다")
-    keep = [c for c in ["Open", "Close", "Volume"] if c in df.columns]
+    keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
     df = df[keep].astype(float)
     df.index = pd.to_datetime(df.index)
 
