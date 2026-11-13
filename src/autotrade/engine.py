@@ -56,9 +56,13 @@ def run_backtest(
     initial_cash: float = 10_000_000,
     integer_shares: bool = True,
     min_trade_frac: float = 0.0,
+    delisted: dict[str, pd.Timestamp] | None = None,
 ) -> BacktestResult:
-    """min_trade_frac: 목표와의 차이가 전체 자산의 이 비율보다 작으면 거래하지 않는다.
-    (전량 매도는 항상 실행) 들고 있는 종목을 매일 조금씩 다시 맞추는 비용을 막는 용도.
+    """
+    min_trade_frac: 목표와의 차이가 전체 자산의 이 비율보다 작으면 거래하지 않는다.
+        (전량 매도는 항상 실행) 들고 있는 종목을 매일 조금씩 다시 맞추는 비용을 막는 용도.
+    delisted: 종목 → 상장폐지일(더 이상 상장돼 있지 않은 첫날). 그날 아침 보유분을
+        마지막 거래 가격에 판 것으로 처리한다(매도 비용 포함).
     """
     if not 0 <= min_trade_frac < 1:
         raise ValueError("min_trade_frac 은 0 이상 1 미만이어야 합니다")
@@ -78,8 +82,24 @@ def run_backtest(
     trades: list[dict] = []
     decisions: dict[pd.Timestamp, pd.Series] = {}
     total_cost = 0.0
+    delist_dates = {
+        t: pd.Timestamp(d) for t, d in (delisted or {}).items() if t in shares.index and pd.notna(d)
+    }
 
     for i, date in enumerate(dates):
+        # 0) 상장폐지된 보유 종목은 마지막 거래 가격으로 정리
+        for ticker, d in delist_dates.items():
+            if date >= d and shares[ticker] > _EPS:
+                price = float(close_ffill.loc[date, ticker])
+                qty = float(shares[ticker])
+                amount = qty * price
+                cost = amount * costs.sell_rate
+                cash += amount - cost
+                shares[ticker] = 0.0
+                total_cost += cost
+                trades.append(dict(date=date, ticker=ticker, side="delist", qty=qty,
+                                   price=price, amount=amount, cost=cost))
+
         # 1) 전날 결정한 주문을 오늘 시가에 체결
         if pending is not None:
             cash, day_trades, day_cost = _execute(

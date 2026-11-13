@@ -151,6 +151,18 @@ def test_small_drift_is_not_traded_but_full_exit_is():
     assert result.trades.iloc[-1]["side"] == "sell"
 
 
+def test_delisted_holding_is_sold_at_last_price():
+    dates = pd.bdate_range("2020-01-01", periods=6)
+    close = pd.DataFrame({"A": [100.0, 100, 80, 40, np.nan, np.nan]}, index=dates)
+    prices = Prices(close.copy(), close)
+    costs = CostModel(commission=0.0, sell_tax=0.01, slippage=0.0)
+    result = run_backtest(prices, Scheduled({0: {"A": 1.0}}), rebalance="D", costs=costs,
+                          initial_cash=1_000, integer_shares=False, delisted={"A": dates[4]})
+    last = result.trades.iloc[-1]
+    assert (last["side"], last["date"], last["price"]) == ("delist", dates[4], 40.0)
+    assert result.equity.iloc[-1] == pytest.approx(1_000 / 100 * 40 * 0.99)
+
+
 @pytest.mark.parametrize(
     "weights, message",
     [({"A": 0.7, "B": 0.6}, "1을 넘습니다"), ({"A": -0.1}, "음수"), ({"Z": 0.5}, "없는 종목")],
