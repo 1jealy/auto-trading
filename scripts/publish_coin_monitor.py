@@ -27,7 +27,7 @@ README = """# 코인 모니터
 
 비트코인 시세와 **모의 계좌**를 실시간으로 보는 웹 앱입니다. 폰·패드에서 홈 화면에 추가하면 앱처럼 열립니다.
 
-- 열기: https://1jealy.github.io/coin-monitor/account.html
+- 열기: https://1jealy.github.io/coin-monitor/paper.html (모의 투자) · account.html (내 계좌) · index.html (시세)
 - 가격: 업비트 공개 시세(실시간 웹소켓, REST)를 브라우저가 직접 받습니다. 서버는 없습니다.
 - 계좌: `mock_account.json`의 **예시 기록**입니다. 실제 계좌가 아니며, 주문 기능도 없습니다.
 - 투자 판단의 근거가 아니라 관찰용입니다.
@@ -61,7 +61,7 @@ def main(dry: bool) -> None:
         shutil.copy2(f, out)
     # GitHub Pages 는 파일을 10분간 브라우저에 저장해 둔다 → 새 HTML 이 예전 JS 와 섞이지 않게 주소에 버전 표시
     stamp = time.strftime("%Y%m%d%H%M%S")
-    asset = re.compile(r'((?:src|href)=")((?:styles\.css|net\.js|coins\.js|app\.js|account\.js|manifest\.webmanifest))(")')
+    asset = re.compile(r'((?:src|href)=")((?:styles\.css|net\.js|coins\.js|strategy\.js|paper\.js|app\.js|account\.js|manifest\.webmanifest))(")')
     for html in DEST.glob("*.html"):
         text = html.read_text(encoding="utf-8")
         html.write_text(asset.sub(rf"\g<1>\g<2>?v={stamp}\g<3>", text), encoding="utf-8")

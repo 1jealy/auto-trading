@@ -163,7 +163,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._guard(path):
             return
         if path == "/":
-            return self._redirect("/account.html")
+            return self._redirect("/paper.html")
         if path == "/api/account":
             return self._account()
         if path == "/api/server":
