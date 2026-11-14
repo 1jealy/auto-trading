@@ -1,0 +1,18 @@
+[server]
+headless = true
+port = 8501
+# 이 컴퓨터에서만 열리게 (공유기·인터넷 쪽에서는 접속 불가)
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# 개발용 메뉴(Deploy 버튼 등) 숨김
+toolbarMode = "viewer"
+
+[theme.light]
+primaryColor = "#2563C9"
+
+[theme.dark]
+primaryColor = "#6E9BEA"

@@ -11,6 +11,18 @@
 - `src/autotrade/strategies/` — 전략 모듈. `Strategy.target_weights(history)`만 구현하면 된다
 - `tests/` — 엔진 정확성 테스트(미래 참조 금지, 비용 반영, 체결 시점)
 - `scripts/` — 실행 예제
+- `app/` — 결과 보기 앱(Streamlit). `실행.bat` 또는 `.venv/Scripts/python -m streamlit run app/app.py`
+
+## 결과 보기 앱 (app/)
+
+- 사용자는 쉬운 한국어 화면을 원한다. 전문 용어 대신 "흔들림", "가장 크게 떨어졌을 때", "1년 평균"처럼 쓴다.
+- `app/runners.py`의 계산은 `scripts/exp0*.py`의 상수(종목, 기간, 비용)를 그대로 가져다 쓴다. 기본값으로 돌린 결과는
+  docs/experiments.md 기록과 같아야 한다. 실험 스크립트를 바꾸면 앱 숫자도 기록과 맞는지 다시 확인할 것.
+- **검증 기간은 이미 돌린 실험만 연다**(`view_results.VALIDATION_DONE`). 새 실험의 검증 기간을 돌리면 그때 추가한다.
+- "숫자 바꿔 보기"는 연습 기간 전용이며 아무것도 저장하지 않는다. 결과를 보고 규칙을 바꾸면 새 시도로 기록해야 한다.
+- `.streamlit/config.toml`: 이 컴퓨터에서만 접속(`address = "localhost"`), 개발 메뉴 숨김. 밝은/어두운 화면은 시스템 설정을 따른다.
+- 화면 디자인은 impeccable 스킬 지침(작업용 화면: 차분한 색, 익숙한 구성)을 따른다. 그 스킬의 보조 실행 파일은 쓰지 않는다.
+- 앱 코드를 고친 뒤에는 앱을 껐다 켜야 반영되는 경우가 있다.
 
 ## 반드시 지킬 규칙
 
