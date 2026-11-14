@@ -7,7 +7,6 @@
 "use strict";
 
 const KST = 9 * 3600;
-const WS_URL = "wss://api.upbit.com/websocket/v1";
 const IV_SECONDS = { "1": 60, "5": 300, "15": 900, "60": 3600, D: 86400 };
 const HISTORY_PAGES = 2; // 200개씩 2번 → 400개
 const BAND_HOURS = [6, 8]; // 실험 #5: 한국 시간 06~08시
@@ -265,7 +264,11 @@ async function loadMarkets() {
   const krw = all.filter((m) => m.market.startsWith("KRW-"));
   let ranked = krw;
   try {
-    const tick = await api(NET.upbit(`ticker?markets=${krw.map((m) => m.market).join(",")}`));
+    // 한 번에 다 넣으면 주소가 너무 길어 거절됨(414) → 100개씩 나눠 요청
+    const groups = [];
+    for (let i = 0; i < krw.length; i += 100) groups.push(krw.slice(i, i + 100));
+    const tick = (await Promise.all(groups.map((g) =>
+      api(NET.upbit(`ticker?markets=${g.map((m) => m.market).join(",")}`))))).flat();
     const value = new Map(tick.map((t) => [t.market, t.acc_trade_price_24h]));
     ranked = [...krw].sort((a, b) => (value.get(b.market) || 0) - (value.get(a.market) || 0));
   } catch { /* 순위 없이 이름 순 */ }
@@ -290,7 +293,7 @@ function connect() {
   clearInterval(state.pingTimer);
   if (state.ws) { state.ws.onclose = null; state.ws.close(); }
   setStatus("connecting", "연결 중");
-  const ws = new WebSocket(WS_URL);
+  const ws = new WebSocket(NET.wsUrl());
   ws.binaryType = "arraybuffer";
   state.ws = ws;
   const decoder = new TextDecoder();
@@ -438,9 +441,9 @@ async function pollCoinone() {
 }
 
 function renderCost() {
-  const UP_FEE = 0.1; // 0.05% × 2
+  const UP_FEE = NET.mode === "server" ? 0.1 : null; // 업비트 0.05% × 2. 공개 주소(빗썸)는 수수료를 따로 확인해야 해서 비워 둠
   $("up-spread").textContent = fmtPct(state.upSpread);
-  $("up-total").textContent = state.upSpread == null ? "—" : fmtPct(state.upSpread + UP_FEE);
+  $("up-total").textContent = state.upSpread == null || UP_FEE == null ? "—" : fmtPct(state.upSpread + UP_FEE);
   if (state.coSpread === "static") {
     $("co-spread").textContent = "PC 서버에서만";
     $("co-total").textContent = "—";
@@ -527,6 +530,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.body.dataset.band = $("band").checked && state.iv !== "D" ? "on" : "off";
 
   await NET.detect();
+  NET.label();
+  if (NET.mode !== "server") $("up-fee").textContent = "확인 필요";
   try {
     await loadMarkets();
   } catch (e) {
