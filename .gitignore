@@ -26,3 +26,7 @@ Thumbs.db
 # 코인 모니터: 접속 PIN, 개인 계좌 기록
 crypto_live/.pin
 crypto_live/account.json
+
+# 아이콘 미리보기 (재생성 가능)
+crypto_live/icon-preview.png
+crypto_live/icon-sheet.png
