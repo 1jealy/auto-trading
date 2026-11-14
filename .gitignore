@@ -2,6 +2,7 @@
 .env
 *.key
 *secret*
+.kis_token.json
 
 # Python
 .venv/
@@ -13,6 +14,7 @@ __pycache__/
 # 데이터/결과물 (용량 크고 재생성 가능)
 data/cache/
 data/minute/
+data/minute_kis/
 results/
 
 # OS / 에디터
