@@ -1,7 +1,7 @@
 /* 코인 시세 분석 — 화면 동작.
- * - 과거 캔들: 로컬 서버(/api/upbit/...)를 거쳐 업비트 REST
+ * - 과거 캔들: 업비트 REST (PC 서버로 열면 서버를 거치고, 정적 호스팅이면 직접 — net.js)
  * - 실시간 체결·호가·시세: 브라우저가 업비트 웹소켓에 직접 연결
- * - 코인원 호가: 로컬 서버를 거쳐 3초마다
+ * - 코인원 호가: PC 서버로 열었을 때만 3초마다 (코인원은 브라우저 직접 요청을 막아 둠)
  * 차트 시각은 한국 시간으로 보이도록 UTC+9 만큼 밀어서 넣는다.
  */
 "use strict";
@@ -239,7 +239,7 @@ async function loadHistory() {
     for (let p = 0; p < HISTORY_PAGES; p++) {
       const q = new URLSearchParams({ market: state.market, count: "200" });
       if (to) q.set("to", to);
-      const page = await api(`/api/upbit/${path}?${q}`);
+      const page = await api(NET.upbit(`${path}?${q}`));
       if (!Array.isArray(page) || page.length === 0) break;
       rows = rows.concat(page);
       to = `${page[page.length - 1].candle_date_time_utc}Z`;
@@ -261,11 +261,11 @@ async function loadHistory() {
 }
 
 async function loadMarkets() {
-  const all = await api("/api/upbit/market/all?isDetails=false");
+  const all = await api(NET.upbit("market/all?isDetails=false"));
   const krw = all.filter((m) => m.market.startsWith("KRW-"));
   let ranked = krw;
   try {
-    const tick = await api(`/api/upbit/ticker?markets=${krw.map((m) => m.market).join(",")}`);
+    const tick = await api(NET.upbit(`ticker?markets=${krw.map((m) => m.market).join(",")}`));
     const value = new Map(tick.map((t) => [t.market, t.acc_trade_price_24h]));
     ranked = [...krw].sort((a, b) => (value.get(b.market) || 0) - (value.get(a.market) || 0));
   } catch { /* 순위 없이 이름 순 */ }
@@ -365,7 +365,7 @@ function onTicker(m) {
   $("hi").textContent = fmtPrice(m.high_price);
   $("lo").textContent = fmtPrice(m.low_price);
   $("vol24").textContent = fmtKrwBig(m.acc_trade_price_24h);
-  document.title = `${fmtPrice(m.trade_price)} · ${m.code.slice(4)} · 코인 시세 분석`;
+  document.title = `${fmtPrice(m.trade_price)} · ${m.code.slice(4)} · 코인 모니터`;
 }
 
 function addTrade(m) {
@@ -423,9 +423,10 @@ function renderBook(m) {
 /* ── 코인원 호가 (3초마다) ── */
 async function pollCoinone() {
   clearTimeout(state.coTimer);
-  const base = state.market.slice(4);
+  const url = NET.coinone(state.market.slice(4));
+  if (!url) { state.coSpread = "static"; renderCost(); return; }
   try {
-    const b = await api(`/api/coinone/orderbook/${base}`);
+    const b = await api(url);
     if (b.result !== "success" || !b.bids?.length || !b.asks?.length) throw new Error("no book");
     const bid = parseFloat(b.bids[0].price), ask = parseFloat(b.asks[0].price);
     state.coSpread = ((ask - bid) / ((ask + bid) / 2)) * 100;
@@ -440,7 +441,10 @@ function renderCost() {
   const UP_FEE = 0.1; // 0.05% × 2
   $("up-spread").textContent = fmtPct(state.upSpread);
   $("up-total").textContent = state.upSpread == null ? "—" : fmtPct(state.upSpread + UP_FEE);
-  if (state.coSpread === undefined) {
+  if (state.coSpread === "static") {
+    $("co-spread").textContent = "PC 서버에서만";
+    $("co-total").textContent = "—";
+  } else if (state.coSpread === undefined) {
     $("co-spread").textContent = "없음";
     $("co-total").textContent = "—";
   } else {
@@ -522,6 +526,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("band").disabled = state.iv === "D";
   document.body.dataset.band = $("band").checked && state.iv !== "D" ? "on" : "off";
 
+  await NET.detect();
   try {
     await loadMarkets();
   } catch (e) {

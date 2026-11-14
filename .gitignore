@@ -22,3 +22,7 @@ results/
 Thumbs.db
 .vscode/
 .idea/
+
+# 코인 모니터: 접속 PIN, 개인 계좌 기록
+crypto_live/.pin
+crypto_live/account.json

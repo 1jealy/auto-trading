@@ -11,6 +11,17 @@ gatherUsageStats = false
 # 개발용 메뉴(Deploy 버튼 등) 숨김
 toolbarMode = "viewer"
 
+[theme]
+# 글꼴: Pretendard (무료 한글 글꼴, 인터넷에서 불러옴)
+font = "Pretendard, sans-serif"
+headingFont = "Pretendard, sans-serif"
+
+[[theme.fontFaces]]
+family = "Pretendard"
+url = "https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/woff2/PretendardVariable.woff2"
+weight = "45 920"
+style = "normal"
+
 [theme.light]
 primaryColor = "#2563C9"
 
