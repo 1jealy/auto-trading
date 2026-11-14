@@ -82,3 +82,24 @@ def test_month_helpers():
     assert up.month_range("2023-11", "2024-02") == [(2023, 11), (2023, 12), (2024, 1), (2024, 2)]
     assert up.last_complete_month(datetime(2026, 11, 14)) == "2026-10"
     assert up.last_complete_month(datetime(2026, 1, 3)) == "2025-12"
+
+
+class FakeDays(FakeCandles):
+    """하루 캔들 가짜 서버. 하루 캔들 주소로만 응답한다."""
+
+    def __init__(self, from_, days):
+        super().__init__(from_, from_)
+        self.times = [from_ + timedelta(days=i) for i in range(days)]
+
+    def get(self, url, params, timeout):
+        assert url.endswith("/candles/days")
+        return super().get(url, params, timeout)
+
+
+def test_day_candles_page_back_over_many_requests():
+    fake = FakeDays(datetime(2017, 9, 25), 500)
+    df = up.days_between("KRW-BTC", datetime(2017, 1, 1), datetime(2019, 1, 1), session=fake)
+    assert len(df) == 463  # 2017-09-25 ~ 2018-12-31
+    assert df.index.is_unique and df.index.is_monotonic_increasing
+    assert df.index[0] == pd.Timestamp("2017-09-25") and df.index[-1] == pd.Timestamp("2018-12-31")
+    assert fake.calls >= 3

@@ -53,11 +53,22 @@ def _get(session: Any, path: str, params: dict, pause: float, retries: int = 5) 
 def minutes_between(market: str, start: datetime, end: datetime, session: Any = None,
                     pause: float = 0.12) -> pd.DataFrame:
     """[start, end) 구간의 1분 데이터 (UTC). end 부터 거꾸로 200개씩 받는다."""
+    return _candles_between("/candles/minutes/1", market, start, end, session, pause)
+
+
+def days_between(market: str, start: datetime, end: datetime, session: Any = None,
+                 pause: float = 0.12) -> pd.DataFrame:
+    """[start, end) 구간의 하루 캔들 (UTC 0시 = 한국 9시에 시작하는 하루). 행 이름은 그날 시작 시각."""
+    return _candles_between("/candles/days", market, start, end, session, pause)
+
+
+def _candles_between(path: str, market: str, start: datetime, end: datetime, session: Any,
+                     pause: float) -> pd.DataFrame:
     session = _session(session)
     rows: list[dict] = []
     cursor = end
     while cursor > start:
-        page = _get(session, "/candles/minutes/1", {
+        page = _get(session, path, {
             "market": market, "to": cursor.strftime("%Y-%m-%dT%H:%M:%SZ"), "count": 200,
         }, pause)
         if not page:
