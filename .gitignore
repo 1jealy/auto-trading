@@ -15,6 +15,7 @@ __pycache__/
 data/cache/
 data/minute/
 data/minute_kis/
+data/ticks/
 results/
 
 # OS / 에디터
