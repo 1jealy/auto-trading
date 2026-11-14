@@ -4,6 +4,5 @@
 # 패키지 설치만 한다. 시세 데이터는 용량·시간이 커서 세션 안에서 scripts/cloud_data.sh 로 받는다.
 set -euo pipefail
 python3 --version
-python3 -m pip install --quiet --upgrade pip
 python3 -m pip install --quiet -e ".[dev]"
 python3 -m pytest -q 2>&1 | tail -1 || true
