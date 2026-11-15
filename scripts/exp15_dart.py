@@ -51,32 +51,25 @@ def disclosures() -> pd.DataFrame:
     return d.sort_values("rcept_no").reset_index(drop=True)
 
 
+ADMIN_DAYS = 365  # 관리종목 대신: '지정 사유 발생' 공시일부터 1년 (2026-11-15 사용자 결정)
+ADMIN_TITLE = re.compile(r"^(내부결산시점관리종목지정|주권매매거래정지(기간변경)?\(관리종목지정사유발생\))")
+
+
 def admin_periods() -> dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]:
-    """관리종목 기간 (거래소 시장조치 공시 I003의 '관리종목지정' ~ '관리종목지정해제')."""
+    """관리종목으로 볼 기간. DART 에는 거래소의 '관리종목 지정/해제' 기록이 없어서,
+    '관리종목 지정 사유 발생' 공시(회사 I001 + 거래소 거래정지 I003)일부터 ADMIN_DAYS 일 동안으로 대신한다.
+    """
     from dart_fetch import quarters
 
     frames = [DartClient().list_quarter("I003", y, q, workers=4) for y, q in quarters(start_year=2014)]
+    frames += [DartClient().list_quarter("I001", y, q, workers=4) for y, q in quarters()]
     m = pd.concat(frames, ignore_index=True)
     m = m[m["stock_code"].str.strip() != ""]
     name = m["report_nm"].str.replace(r"\s", "", regex=True)
-    m = m[~name.str.startswith("[")]
-    name = m["report_nm"].str.replace(r"\s", "", regex=True)
-    on = m[name.str.match(r"^관리종목지정(?!해제)") & ~name.str.contains("우려|예고|사유발생")]
-    off = m[name.str.match(r"^관리종목(지정)?해제")]
+    m = m[name.str.match(ADMIN_TITLE)]
     out: dict[str, list] = {}
-    events = pd.concat([on.assign(ev=1), off.assign(ev=0)]).sort_values("rcept_no")
-    for code, g in events.groupby("stock_code"):
-        spans, start = [], None
-        for r in g.itertuples():
-            d = pd.Timestamp(r.rcept_dt)
-            if r.ev == 1 and start is None:
-                start = d
-            elif r.ev == 0 and start is not None:
-                spans.append((start, d))
-                start = None
-        if start is not None:
-            spans.append((start, pd.Timestamp("2100-01-01")))
-        out[code] = spans
+    for code, g in m.groupby("stock_code"):
+        out[code] = [(d, d + pd.Timedelta(days=ADMIN_DAYS)) for d in pd.to_datetime(g["rcept_dt"])]
     return out
 
 
@@ -92,10 +85,10 @@ def read_all(d: pd.DataFrame) -> pd.DataFrame:
     for r in d.itertuples():
         f = DART_CACHE / "docs" / f"{r.rcept_no}.html"
         if not f.exists():
-            rows.append({"ok": None, "signal": False, "values": {}, "reason": "문서 안 받음"})
+            rows.append({"ok": None, "na": False, "signal": False, "values": {}, "reason": "문서 안 받음"})
             continue
         p = PARSERS[r.kind](c.document(r.rcept_no))
-        rows.append({"ok": p.ok, "signal": p.signal, "values": p.values, "reason": p.reason})
+        rows.append({"ok": p.ok, "na": p.na, "signal": p.signal, "values": p.values, "reason": p.reason})
     return pd.concat([d.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
 
 
@@ -136,10 +129,10 @@ def check() -> None:
     print("\n빼는 종목 이유별:", d.loc[d["excluded"], "why_ex"].value_counts().to_dict())
     u = d[~d["excluded"]]
     print("\n문서 읽기 결과 (빼는 종목 제외):")
-    st = u["ok"].map({True: "읽음", False: "실패", None: "문서 없음"})
+    st = u["ok"].map({True: "읽음", False: "실패", None: "문서 없음"}).where(~u["na"].astype(bool), "해당 없음")
     print(pd.crosstab([u["kind"]], st, margins=True))
     print("\n실패 이유:")
-    print(u[u["ok"] == False].groupby(["kind", "reason"]).size())  # noqa: E712
+    print(u[u["ok"] == False].groupby(["kind", "na", "reason"]).size())  # noqa: E712
     print("\n신호 수(사는 조건 만족, 거래대금 거르기 전):")
     print(pd.crosstab(u["year"], u["kind"], values=u["signal"], aggfunc="sum"))
 
@@ -188,7 +181,8 @@ def run(period: str) -> None:
         for k, v in j.items():
             print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
     fails = d[~d["excluded"] & (d["date"] >= start) & (d["date"] <= end)]
-    summary["읽기"] = {k: {"전체": int((g["ok"].notna()).sum()), "실패": int((g["ok"] == False).sum())}  # noqa: E712
+    summary["읽기"] = {k: {"전체": int((g["ok"].notna()).sum()), "해당없음": int(g["na"].astype(bool).sum()),
+                         "실패": int(((g["ok"] == False) & ~g["na"].astype(bool)).sum())}  # noqa: E712
                      for k, g in fails.groupby("kind")}
     (OUT / f"{period}_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1, default=str),
                                                encoding="utf-8")

@@ -60,3 +60,33 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def fetch_docs(rcept_nos: list[str], workers: int = 12, web: bool = False) -> None:
+    """문서를 동시에 여러 개 받는다. 받은 것은 건너뜀. 하루 한도에 걸리면 멈춘다."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    c0 = DartClient()
+    todo = [r for r in rcept_nos if not (c0.cache_dir / "docs" / f"{r}.html").exists()]
+    print("받을 문서:", len(todo), flush=True)
+    stop = threading.Event()
+    done = [0, 0]
+
+    def one(r: str) -> None:
+        if stop.is_set():
+            return
+        try:
+            (DartClient().document_web if web else DartClient().document)(r)
+            done[0] += 1
+        except DartLimitError:
+            stop.set()
+        except Exception as e:  # noqa: BLE001
+            done[1] += 1
+            print("실패", r, str(e)[:80], flush=True)
+        if (done[0] + done[1]) % 1000 == 0:
+            print("받음", done[0], "실패", done[1], flush=True)
+
+    with ThreadPoolExecutor(workers) as pool:
+        list(pool.map(one, todo))
+    print("끝. 받음", done[0], "실패", done[1], "한도 걸림" if stop.is_set() else "", flush=True)

@@ -163,6 +163,40 @@ class DartClient:
         return text
 
 
+    def document_web(self, rcept_no: str) -> str:
+        """같은 문서를 DART 웹 화면(dart.fss.or.kr)에서 받는다. API 하루 한도를 쓰지 않는다.
+
+        API 문서와 같은 표가 들어 있다(맨 앞에 출처 표시 한 줄을 붙여 저장).
+        """
+        import requests
+
+        f = self.cache_dir / "docs" / f"{rcept_no}.html"
+        if f.exists():
+            return f.read_text(encoding="utf-8")
+        s = requests.Session()
+        s.headers["User-Agent"] = "Mozilla/5.0 (research; public disclosures)"
+        for attempt in range(4):
+            try:
+                r = s.get("https://dart.fss.or.kr/dsaf001/main.do", params={"rcpNo": rcept_no}, timeout=30)
+                m = re.search(r'viewDoc\("(\d+)",\s*"(\d+)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"',
+                              r.text)
+                if not m:
+                    raise DartError(f"{rcept_no}: 웹 화면에서 문서 번호를 못 찾음")
+                keys = ["rcpNo", "dcmNo", "eleId", "offset", "length", "dtd"]
+                v = s.get("https://dart.fss.or.kr/report/viewer.do", params=dict(zip(keys, m.groups())), timeout=30)
+                v.raise_for_status()
+                v.encoding = v.apparent_encoding if "charset" not in v.headers.get("content-type", "") else v.encoding
+                text = "<!-- source: dart web viewer -->\n" + v.text
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(text, encoding="utf-8")
+                return text
+            except DartError:
+                raise
+            except Exception:  # noqa: BLE001
+                time.sleep(2 ** attempt)
+        raise DartError(f"{rcept_no}: 웹 화면 받기 실패")
+
+
 def decode(b: bytes) -> str:
     """문서 글자 인코딩: 거래소 공시는 대개 EUC-KR, 나머지는 UTF-8."""
     for enc in ("utf-8", "cp949"):
@@ -176,18 +210,23 @@ def decode(b: bytes) -> str:
 # ---------------------------------------------------------------- 문서 안의 표 읽기
 
 
-def table_rows(doc: str) -> list[list[str]]:
-    """문서의 모든 표 줄을 [칸 글자, ...] 목록으로. 칸 안의 공백은 하나로 줄인다."""
+def table_rows(doc: str, expand: bool = False) -> list[list[str]]:
+    """문서의 모든 표 줄을 [칸 글자, ...] 목록으로. 칸 안의 공백은 하나로 줄인다.
+
+    expand=True 이면 여러 칸을 합친 칸(colspan)을 그 수만큼 되풀이해 칸 위치를 맞춘다.
+    """
     import html as _html
 
     doc = re.sub(r"(?is)<style.*?</style>", "", doc)
     out = []
     for tr in re.findall(r"(?is)<tr\b.*?</tr>", doc):
-        cells = re.findall(r"(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>", tr)
-        cells = [_html.unescape(re.sub(r"<[^>]+>", " ", c)) for c in cells]
-        cells = [re.sub(r"\s+", " ", c).replace("\xa0", " ").strip() for c in cells]
-        if cells:
-            out.append(cells)
+        row = []
+        for attrs, c in re.findall(r"(?is)<t[dh]\b([^>]*)>(.*?)</t[dh]>", tr):
+            text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", c))).replace("\xa0", " ").strip()
+            span = re.search(r"colspan\s*=\s*['\"]?(\d+)", attrs, re.I)
+            row += [text] * (int(span.group(1)) if expand and span else 1)
+        if row:
+            out.append(row)
     return out
 
 
@@ -216,40 +255,53 @@ class Parsed:
     signal: bool  # 사는 조건을 만족하는가
     values: dict  # 읽은 숫자 (대조용)
     reason: str = ""  # 읽기 실패 이유
+    na: bool = False  # 해당 없음(원문 칸이 비어 있음 — 월별 판매량, 우선주만 소각, 금액 비공개 등). 실패로 세지 않음
+
+
+_ANNUAL = re.compile(r"^\(?\s*\d{4}\s*년\s*\)?$|\d{4}\.?\s*0?1\.\s*0?1\.?\s*~\s*\d{4}\.?\s*12\.\s*31|연간")
 
 
 def parse_A(doc: str) -> Parsed:
     """잠정실적: 영업이익 '당해실적' 줄의 당기 값과 전년동기 값.
 
+    1년 실적 공시(당기가 한 해 전체)에서 전년동기 칸이 비어 있으면 '전기'(= 작년 한 해)를 쓴다.
     사는 조건: 당기 > 0 이고 (전년동기 <= 0 이거나 당기 >= 전년동기 x 1.3).
     """
-    rows = table_rows(doc)
-    header = None
-    for r in rows:
+    rows = table_rows(doc, expand=True)
+    hi = None
+    for n, r in enumerate(rows):
         keys = [_key(c) for c in r]
         if any(k.startswith("당기실적") for k in keys) and any(k.startswith("전년동기실적") for k in keys):
-            header = keys
+            hi = n
             break
-    if header is None:
+    if hi is None:
         return Parsed(False, False, {}, "머리줄(당기실적/전년동기실적) 없음")
-    cols = [k for k in header if k not in ("구분", "")]
-    i_cur = next(i for i, k in enumerate(cols) if k.startswith("당기실적"))
-    i_yoy = next(i for i, k in enumerate(cols) if k.startswith("전년동기실적"))
-    for r in rows:
-        keys = [_key(c) for c in r]
-        if not keys or keys[0] != "영업이익":
+    head = [_key(c) for c in rows[hi]]
+    i_cur = next(i for i, k in enumerate(head) if k.startswith("당기실적"))
+    i_yoy = next(i for i, k in enumerate(head) if k.startswith("전년동기실적"))
+    i_prev = next((i for i, k in enumerate(head) if k.startswith("전기실적")), None)
+    period = [c for c in rows[hi + 1]] if hi + 1 < len(rows) else []
+    annual = bool(period) and bool(_ANNUAL.search(period[0].strip()))
+    for r in rows[hi + 1 :]:
+        if not r or _key(r[0]) != "영업이익":
             continue
-        rest = r[1:]
-        if rest and _key(rest[0]) in ("당해실적", "당기", "분기", "당해"):
-            rest = rest[1:]
-        if len(rest) <= max(i_cur, i_yoy):
-            return Parsed(False, False, {}, "영업이익 줄 칸 수 부족")
-        cur, yoy = number(rest[i_cur]), number(rest[i_yoy])
+        off = len(r) - len(head)  # 머리줄의 '구분'이 한 칸이면 1, 두 칸이면 0
+        if not 0 <= off <= 1 or len(r) <= max(i_cur, i_yoy) + off:
+            return Parsed(False, False, {}, "영업이익 줄 칸 수가 머리줄과 안 맞음")
+        cell = lambda i: r[i + off]  # noqa: E731
+        cur, yoy = number(cell(i_cur)), number(cell(i_yoy))
         vals = {"영업이익_당기": cur, "영업이익_전년동기": yoy}
+        if yoy is None and annual and i_prev is not None:
+            yoy = number(cell(i_prev))
+            vals = {"영업이익_당기": cur, "영업이익_전년(전기칸)": yoy}
+        if cur is None and all(number(x) is None for x in r[1:]):
+            return Parsed(False, False, vals, "영업이익 칸이 모두 비어 있음", na=True)
         if cur is None:
             return Parsed(False, False, vals, "당기 영업이익 숫자 아님")
+        if yoy is None and cell(i_yoy).strip() in ("-", ""):
+            return Parsed(False, False, vals, "작년 같은 기간 숫자를 안 적음(새로 상장 등)", na=True)
         if yoy is None:
-            return Parsed(False, False, vals, "전년동기 영업이익 없음")
+            return Parsed(False, False, vals, "전년동기 영업이익 숫자 아님")
         sig = cur > 0 and (yoy <= 0 or cur >= 1.3 * yoy)
         return Parsed(True, sig, vals)
     return Parsed(False, False, {}, "영업이익 줄 없음")
@@ -281,6 +333,8 @@ def parse_B(doc: str) -> Parsed:
     if p is None and a is not None and s and s > 0:
         p = round(a / s * 100, 2)
         vals["매출액대비%(계산)"] = p
+    if p is None and a is None:
+        return Parsed(False, False, vals, "계약금액 비공개(-)", na=True)
     if p is None:
         return Parsed(False, False, vals, "매출액 대비 % 없음")
     return Parsed(True, p >= 20, vals)
@@ -311,6 +365,8 @@ def parse_C(doc: str) -> Parsed:
                     elif section == "total" and total is None:
                         total = v
     vals = {"소각보통주": burn, "발행보통주": total}
+    if burn is None and total is not None:
+        return Parsed(False, False, vals, "보통주 소각 아님(종류주식만)", na=True)
     if not burn or not total:
         return Parsed(False, False, vals, "보통주 소각 수 또는 발행주식총수 없음")
     vals["비율%"] = round(burn / total * 100, 3)
