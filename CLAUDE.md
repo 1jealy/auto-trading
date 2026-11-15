@@ -14,6 +14,7 @@
 - `app/` — 결과 보기 앱(Streamlit). `실행.bat` 또는 `.venv/Scripts/python -m streamlit run app/app.py`
 - `src/autotrade/paper/` — 모의 투자(포워드 테스트) 엔진. 공개 시세만 읽고 가짜 체결을 기록한다(주문 기능 없음)
 - `crypto_live/` — 코인 모니터(시세·모의 투자 화면). `코인시세.bat` 이 화면 서버와 모의 투자 엔진을 함께 켠다
+- `src/autotrade/dart.py`·`event_swing.py` — #15 공시 받기·표 읽기, 공시 뒤 N일 보유 계산. 받은 공시는 `data/cache/dart/`(Git 제외)
 - `docs/plan.md` — 앞으로의 계획(#12~#18)과 고친 이유. 정확한 규칙은 `docs/experiments.md`
 
 ## 결과 보기 앱 (app/)
@@ -30,7 +31,7 @@
 ## 모의 투자 (src/autotrade/paper, crypto_live 모의 투자 탭)
 
 - 지금 도는 것: 단타 #17(정식)·#18(비용을 넘는 틈만 자주), 느린 전략 #12·#13·#14, 대조군(비트코인 보유, ETF 4개·5개 나눠 담기, KODEX 200).
-  #15(DART 공시)·#16(LLM 뉴스)은 준비 중.
+  #15(DART 공시)는 백테스트에서 탈락(모의로 안 넘김). #16(LLM 뉴스)은 준비 중.
 - **규칙·숫자는 `docs/experiments.md`에 등록한 것과 같아야 한다.** `scalp.py`의 `FORMAL`/`ALWAYS`, `slow.py`의 기준값을 바꾸면
   새 시도로 기록해야 한다.
 - 단타 체결은 신호를 본 호가창이 아니라 **0.2초 뒤 새로 받은 호가창**으로 계산한다(`Scalper.on_book`). 이 순서를 바꾸지 말 것.
