@@ -35,3 +35,28 @@ class CostModel:
     def zero(cls) -> "CostModel":
         """비용 없음. 테스트 전용 — 성과 보고에 쓰지 말 것."""
         return cls(commission=0.0, sell_tax=0.0, slippage=0.0)
+
+
+# 국내 주식 매도 시 증권거래세(농어촌특별세 포함 합계). 코스피(거래세+농특세 0.15%)와 코스닥 합계가 같다.
+# (시작일, 세율). 출처: 증권거래세법 시행령 개정 연혁. 2026년 0.20%는 2025년 세법 개정안 기준 — 확인 필요.
+STOCK_SELL_TAX = [
+    ("1900-01-01", 0.0030),
+    ("2019-06-03", 0.0025),
+    ("2021-01-01", 0.0023),
+    ("2023-01-01", 0.0020),
+    ("2024-01-01", 0.0018),
+    ("2025-01-01", 0.0015),
+    ("2026-01-01", 0.0020),
+]
+
+
+def stock_sell_tax(date) -> float:
+    """그 날짜에 국내 주식을 팔 때의 증권거래세 합계 비율."""
+    import pandas as pd
+
+    d = pd.Timestamp(date)
+    rate = STOCK_SELL_TAX[0][1]
+    for start, r in STOCK_SELL_TAX:
+        if d >= pd.Timestamp(start):
+            rate = r
+    return rate
