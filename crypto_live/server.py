@@ -11,6 +11,8 @@
 - --lan 이면 다른 기기는 PIN 을 입력해야 들어올 수 있다. 이 컴퓨터에서 여는 것은 PIN 없이 된다.
 - --public 은 인터넷 서버용(HTTPS 터널 뒤): **모든 접속에 접속 코드를 묻는다**(터널을 거치면 모두 이 컴퓨터에서 온 것처럼
   보이므로 "이 컴퓨터면 통과"를 끈다). 코드는 12자리로 길게 만들고, 쿠키는 HTTPS 에서만 보낸다. 127.0.0.1 에서만 듣는다.
+  호스팅이 바깥 연결을 직접 넘겨주는 곳(허깅페이스 Spaces 등)에서는 --host=0.0.0.0 으로 듣는 주소를 바꾼다.
+  접속 코드는 환경 변수 CRYPTO_LIVE_PIN 으로 정할 수 있다(다시 시작해도 같은 코드).
 - /api/paper/*: 모의 투자 기록(data/paper/)을 읽어 보여 준다. --engine 을 붙이면 모의 투자 엔진(src/autotrade/paper)도
   이 창 안에서 함께 돈다. 엔진은 공개 시세만 읽고 주문은 내지 않는다.
 """
@@ -287,11 +289,12 @@ def main():
     if sys.stdout is not None:
         sys.stdout.reconfigure(encoding="utf-8")
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    host_arg = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--host=")), None)
     PUBLIC = "--public" in sys.argv
     LAN = "--lan" in sys.argv or PUBLIC
     PORT = int(args[0]) if args else 8765
     PIN = load_pin(12 if PUBLIC else 6) if LAN else ""
-    host = "0.0.0.0" if LAN and not PUBLIC else "127.0.0.1"  # 공개 서버는 터널만 들어올 수 있게
+    host = host_arg or ("0.0.0.0" if LAN and not PUBLIC else "127.0.0.1")  # 공개 서버는 기본적으로 터널만 들어올 수 있게
     server = ThreadingHTTPServer((host, PORT), Handler)
     if "--engine" in sys.argv:
         try:
@@ -305,7 +308,7 @@ def main():
     print(f"이 컴퓨터에서: http://127.0.0.1:{PORT}", flush=True)
     if PUBLIC:
         print(f"접속 코드: {PIN}   (crypto_live/.pin 에 저장됨. 모든 접속에 필요)", flush=True)
-        print("이 서버는 127.0.0.1 에서만 듣습니다. 밖에서는 HTTPS 터널 주소로 들어오세요(docs/server_setup.md).", flush=True)
+        print(f"듣는 주소: {host}:{PORT}. 밖에서는 HTTPS 주소로만 들어오세요(docs/server_setup.md).", flush=True)
     elif LAN:
         for a in lan_addresses():
             print(f"폰·패드에서 (같은 와이파이): http://{a}:{PORT}", flush=True)

@@ -75,3 +75,28 @@ curl -fsSL https://raw.githubusercontent.com/1jealy/auto-trading/main/deploy/ins
 - 화면 서버가 `active`가 아니면: `sudo journalctl -u coin-monitor -n 50`로 오류를 보세요.
 - 엔진 상태 카드에 해외 가격이 "OKX 선물"로 나오면 바이낸스 선물 연결이 안 되는 것입니다. 서버 지역이 한국인지 확인하세요.
 - 오라클이 "Out of capacity"라고 하면 잠시 뒤 다시 시도하거나 E2.1.Micro를 고르세요.
+
+---
+
+## 임시: 허깅페이스 Spaces 로 화면만 띄우기 (카드·SSH 필요 없음)
+
+**화면을 보는 용도**입니다. 정식 기록용이 아닙니다.
+
+- 미국 서버라 바이낸스 선물이 막혀 **OKX 가격으로 시험 기록**만 쌓입니다(#17 채점 제외, #13 계산 불가).
+- 무료 공간은 **다시 시작하면 기록이 지워지고**, **48시간 아무도 안 열면 잠듭니다**(열면 다시 깨어남, 기록은 처음부터).
+
+### 만드는 순서 (웹 화면에서 5분)
+
+1. https://huggingface.co 가입 → 오른쪽 위 프로필 → **New Space**.
+2. Space name: 예) `coin-monitor` · SDK: **Docker** → **Blank** · Hardware: **CPU basic (free)** · **Public** → Create Space.
+3. Space 의 **Settings → Variables and secrets → New secret**
+   - Name: `CRYPTO_LIVE_PIN` · Value: **직접 정한 숫자 12자리 이상** (이게 접속 코드. 남에게 알려 주지 말 것)
+4. **Files → + Add file → Create a new file** → 파일 이름 `Dockerfile` →
+   깃허브의 [`deploy/hf/Dockerfile`](https://github.com/1jealy/auto-trading/blob/main/deploy/hf/Dockerfile) 내용을 그대로 붙여 넣고 **Commit**.
+5. 몇 분 뒤 상태가 **Running** 이 되면, Space 오른쪽 위 **⋮ → Embed this Space** 에 나오는 **Direct URL**
+   (`https://아이디-coin-monitor.hf.space`) 뒤에 `/paper.html` 을 붙여 엽니다.
+   - Space 페이지(huggingface.co/spaces/…) 안에 끼워진 화면에서는 로그인이 유지되지 않습니다. 꼭 Direct URL 로 여세요.
+6. 접속 코드(3번에서 정한 숫자)를 넣으면 끝. 폰에서는 홈 화면에 추가해 두면 편합니다.
+
+- 코드를 고친 뒤 최신으로 바꾸려면: Space **Settings → Restart** (기록은 지워짐).
+- 오류가 나면 Space 의 **Logs** 탭 내용을 보면 됩니다.

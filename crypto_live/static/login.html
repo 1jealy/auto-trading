@@ -15,7 +15,9 @@
   <main class="login">
     <img src="/icons/icon-192.png" width="56" height="56" alt="" class="login-icon">
     <h1>코인 모니터</h1>
-    <p class="login-note">이 컴퓨터에 띄운 앱입니다. 실행 창에 나온 6자리 PIN을 입력하세요.</p>
+    <p class="login-note" id="note">이 컴퓨터에 띄운 앱입니다. 실행 창에 나온 6자리 PIN을 입력하세요.</p>
+    <p class="login-note" id="framed" hidden>다른 사이트 안에 끼워진 화면에서는 로그인이 유지되지 않아요.
+      <a href="/login.html" target="_blank" rel="noopener">새 창에서 열기</a></p>
     <form method="post" action="/login" class="login-form">
       <label for="pin">PIN</label>
       <input id="pin" name="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="12" required autofocus>
@@ -28,12 +30,16 @@
     const q = new URLSearchParams(location.search);
     const next = q.get("next");
     if (next && next.startsWith("/") && !next.startsWith("//")) document.getElementById("next").value = next;
+    if (location.protocol === "https:") {
+      document.getElementById("note").textContent = "서버에 띄운 앱입니다. 정해 둔 접속 코드를 입력하세요.";
+    }
+    if (window.top !== window.self) document.getElementById("framed").hidden = false;
     const err = q.get("err");
     if (err) {
       const box = document.getElementById("err");
       box.textContent = err === "locked"
         ? "여러 번 틀려서 5분 동안 잠겼습니다. 잠시 뒤 다시 시도하세요."
-        : "PIN이 맞지 않습니다. 실행 창에 나온 숫자를 다시 확인하세요.";
+        : "코드가 맞지 않습니다. 다시 확인하세요.";
       box.hidden = false;
     }
   </script>
