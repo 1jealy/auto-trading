@@ -31,8 +31,11 @@ def all_lists(workers: int = 4, page_workers: int = 4) -> pd.DataFrame:
 
     def one(job):
         ty, y, q = job
-        df = DartClient().list_quarter(ty, y, q, workers=page_workers)
-        print(ty, y, q, len(df), flush=True)
+        c = DartClient()
+        cached = (c.cache_dir / "list" / f"{ty}_{y}Q{q}.json").exists()
+        df = c.list_quarter(ty, y, q, workers=page_workers)
+        if not cached:
+            print(ty, y, q, len(df), flush=True)
         return df
 
     with ThreadPoolExecutor(workers) as pool:

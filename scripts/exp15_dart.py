@@ -136,7 +136,8 @@ def check() -> None:
     print("\n신호 수(사는 조건 만족, 거래대금 거르기 전):")
     print(pd.crosstab(u["year"], u["kind"], values=u["signal"], aggfunc="sum"))
 
-    sample = u[u["ok"].notna()].groupby("kind", group_keys=False).apply(lambda g: g.sample(10, random_state=15))
+    have = u[u["ok"].notna()]
+    sample = pd.concat([have[have["kind"] == k].sample(10, random_state=15) for k in "ABC"])
     OUT.mkdir(parents=True, exist_ok=True)
     lines = []
     for r in sample.itertuples():
