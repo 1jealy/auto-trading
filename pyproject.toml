@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "autotrade"
 version = "0.1.0"
 description = "개인용 주식 자동매매 연구 (백테스트 단계)"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "pandas>=2.2",
     "numpy>=1.26",
