@@ -87,6 +87,14 @@
         <div class="chart" id="chart" role="img" aria-label="캔들 차트. 아래 '표로 보기'에서 같은 숫자를 볼 수 있습니다."></div>
         <p class="chart-msg" id="chart-msg">차트 불러오는 중…</p>
       </div>
+      <div class="chart-tools">
+        <div class="zoom-btns" role="group" aria-label="차트 크기">
+          <button type="button" class="btn tool-btn" id="zoom-out" aria-label="넓게 보기 (캔들 더 많이)">−<span>넓게</span></button>
+          <button type="button" class="btn tool-btn" id="zoom-in" aria-label="자세히 보기 (캔들 더 적게)">+<span>자세히</span></button>
+        </div>
+        <button type="button" class="btn tool-btn" id="recent">최근으로</button>
+      </div>
+      <p class="chart-hint">옆으로 밀면 지난 시간 · 두 손가락으로 벌리면 확대 · 캔들을 누르면 그때 값이 위에 나와요</p>
       <ul class="keys" aria-label="차트 범례">
         <li><span class="key key-up"></span>오른 캔들</li>
         <li><span class="key key-down"></span>내린 캔들</li>

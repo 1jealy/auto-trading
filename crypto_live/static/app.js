@@ -87,6 +87,10 @@ function buildChart() {
     rightPriceScale: { borderColor: c.axis, scaleMargins: { top: 0.12, bottom: 0.24 } },
     timeScale: { borderColor: c.axis, timeVisible: true, secondsVisible: false, rightOffset: 6 },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    // 폰: 위아래로 쓸면 화면이 내려가고(차트가 손가락을 붙잡지 않음), 옆으로 밀면 지난 시간, 두 손가락으로 확대
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    kineticScroll: { touch: true, mouse: false },
     localization: { locale: "ko-KR", timeFormatter: (t) => fmtTime(t, true), priceFormatter: fmtPrice },
   });
   bandSeries = chart.addHistogramSeries({
@@ -104,6 +108,37 @@ function buildChart() {
   ma20Series = chart.addLineSeries({ color: c.ma20, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
   ma60Series = chart.addLineSeries({ color: c.ma60, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
   chart.subscribeCrosshairMove(renderLegend);
+  // 짧게 눌러도(길게 누르지 않아도) 그 캔들의 값을 위 숫자 줄에 보여 줌
+  chart.subscribeClick((param) => {
+    if (!param || param.time == null) return;
+    renderLegend(param);
+    const k = state.candles.find((c) => c.time === param.time);
+    if (k && chart.setCrosshairPosition) chart.setCrosshairPosition(k.close, k.time, candleSeries);
+  });
+}
+
+// 처음 보여 줄 캔들 수: 화면 폭에 맞춰(폰에서는 봉이 너무 가늘지 않게)
+function defaultBars() {
+  const w = $("chart").clientWidth || 600;
+  return Math.max(40, Math.min(140, Math.round(w / 6)));
+}
+
+function showRecent() {
+  const n = state.candles.length;
+  if (!n) return;
+  chart.priceScale("right").applyOptions({ autoScale: true });
+  chart.timeScale().setVisibleLogicalRange({ from: n - defaultBars(), to: n + 4 });
+  if (chart.clearCrosshairPosition) chart.clearCrosshairPosition();
+  legendTime = null;
+  renderLegend(null);
+}
+
+// 오른쪽 끝(최근)을 붙잡은 채 보이는 캔들 수를 늘리거나 줄임
+function zoom(factor) {
+  const ts = chart.timeScale(), r = ts.getVisibleLogicalRange();
+  if (!r) return;
+  const width = Math.max(15, Math.min(state.candles.length + 20, (r.to - r.from) * factor));
+  ts.setVisibleLogicalRange({ from: r.to - width, to: r.to });
 }
 
 function applyChartTheme() {
@@ -249,7 +284,7 @@ async function loadHistory() {
     state.candles = rows.map(toCandle).filter((k) => !seen.has(k.time) && seen.add(k.time)).sort((a, b) => a.time - b.time);
     redrawAll();
     chart.timeScale().fitContent();
-    if (state.iv !== "D") chart.timeScale().setVisibleLogicalRange({ from: state.candles.length - 140, to: state.candles.length + 6 });
+    showRecent();
     box.dataset.loading = "false";
   } catch (e) {
     if (id !== state.loadId) return;
@@ -524,6 +559,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     bandSeries.setData(state.candles.map(bandPoint));
   });
   $("market").addEventListener("change", (e) => selectMarket(e.target.value));
+  $("zoom-in").addEventListener("click", () => zoom(0.6));
+  $("zoom-out").addEventListener("click", () => zoom(1 / 0.6));
+  $("recent").addEventListener("click", showRecent);
 
   state.iv = IV_SECONDS[store.get("iv", "1")] ? store.get("iv", "1") : "1";
   document.querySelectorAll("#intervals button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.iv === state.iv)));
