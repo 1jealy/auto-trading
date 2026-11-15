@@ -61,7 +61,7 @@ def main(dry: bool) -> None:
         shutil.copy2(f, out)
     # GitHub Pages 는 파일을 10분간 브라우저에 저장해 둔다 → 새 HTML 이 예전 JS 와 섞이지 않게 주소에 버전 표시
     stamp = time.strftime("%Y%m%d%H%M%S")
-    asset = re.compile(r'((?:src|href)=")((?:styles\.css|net\.js|coins\.js|strategy\.js|paper\.js|app\.js|account\.js|manifest\.webmanifest))(")')
+    asset = re.compile(r'((?:src|href)=")((?:styles\.css|net\.js|coins\.js|chart\.js|paper\.js|app\.js|account\.js|manifest\.webmanifest))(")')
     for html in DEST.glob("*.html"):
         text = html.read_text(encoding="utf-8")
         html.write_text(asset.sub(rf"\g<1>\g<2>?v={stamp}\g<3>", text), encoding="utf-8")

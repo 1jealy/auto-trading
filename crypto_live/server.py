@@ -9,6 +9,8 @@
 - 실시간 체결·호가는 브라우저가 업비트 웹소켓에 직접 연결한다(이 서버를 거치지 않음).
 - /api/account: 계좌 정보. 지금은 **모의 계좌**(crypto_live/account.json, 없으면 static/mock_account.json).
 - --lan 이면 다른 기기는 PIN 을 입력해야 들어올 수 있다. 이 컴퓨터에서 여는 것은 PIN 없이 된다.
+- /api/paper/*: 모의 투자 기록(data/paper/)을 읽어 보여 준다. --engine 을 붙이면 모의 투자 엔진(src/autotrade/paper)도
+  이 창 안에서 함께 돈다. 엔진은 공개 시세만 읽고 주문은 내지 않는다.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 STATIC = HERE / "static"
 ACCOUNT_FILES = [HERE / "account.json", STATIC / "mock_account.json"]
 PIN_FILE = HERE / ".pin"
@@ -59,6 +62,20 @@ def load_pin() -> str:
     pin = f"{secrets.randbelow(10**6):06d}"
     PIN_FILE.write_text(pin, encoding="utf-8")
     return pin
+
+
+PAPER = {"store": None, "summary": None, "at": 0.0}
+
+
+def paper_store():
+    """모의 투자 기록 저장소. 처음 쓸 때 연다(엔진 꾸러미는 src/ 에 있다)."""
+    if PAPER["store"] is None:
+        if str(ROOT / "src") not in sys.path:
+            sys.path.insert(0, str(ROOT / "src"))
+        from autotrade.paper.store import Store
+
+        PAPER["store"] = Store()
+    return PAPER["store"]
 
 
 PIN = ""
@@ -168,6 +185,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._account()
         if path == "/api/server":
             return self._json(HTTPStatus.OK, {"lan": LAN, "local": self._is_local()})
+        if path.startswith("/api/paper/"):
+            return self._paper(path[len("/api/paper/"):], dict(urllib.parse.parse_qsl(url.query)))
         if path.startswith("/api/upbit/"):
             return self._upbit(path[len("/api/upbit/"):], url.query)
         if path.startswith("/api/coinone/orderbook/"):
@@ -187,6 +206,35 @@ class Handler(SimpleHTTPRequestHandler):
                 data["source"] = f.name
                 return self._json(HTTPStatus.OK, data)
         return self._json(HTTPStatus.NOT_FOUND, {"error": "계좌 파일이 없습니다"})
+
+    # ── 모의 투자 기록 (읽기 전용) ──
+    def _paper(self, what: str, q: dict):
+        try:
+            store = paper_store()
+            if what == "summary":
+                with LOCK:
+                    fresh = PAPER["summary"] is not None and time.time() - PAPER["at"] < 1.5
+                if not fresh:
+                    from autotrade.paper.view import build_summary
+
+                    data = build_summary(store)
+                    with LOCK:
+                        PAPER["summary"], PAPER["at"] = data, time.time()
+                return self._json(HTTPStatus.OK, PAPER["summary"])
+            if what == "trades":
+                key = q.get("key") if q.get("key") in ("s17", "s18") else None
+                before = int(q["before"]) if q.get("before", "").isdigit() else None
+                limit = int(q["limit"]) if q.get("limit", "").isdigit() else 50
+                source = q.get("source") if re.fullmatch(r"[a-z_]{1,20}", q.get("source", "")) else None
+                return self._json(HTTPStatus.OK, {"trades": store.trades(key, source, limit, before)})
+            if what == "trade" and q.get("id", "").isdigit():
+                tr = store.trade(int(q["id"]))
+                if tr is None:
+                    return self._json(HTTPStatus.NOT_FOUND, {"error": "그런 거래 기록이 없습니다"})
+                return self._json(HTTPStatus.OK, tr)
+        except Exception as e:  # noqa: BLE001
+            return self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"모의 투자 기록을 읽지 못했습니다: {e}"})
+        return self._json(HTTPStatus.NOT_FOUND, {"error": "알 수 없는 요청입니다"})
 
     # ── 공개 시세 대신 불러오기 ──
     def _upbit(self, path: str, query: str):
@@ -238,6 +286,15 @@ def main():
     PORT = int(args[0]) if args else 8765
     PIN = load_pin() if LAN else ""
     server = ThreadingHTTPServer(("0.0.0.0" if LAN else "127.0.0.1", PORT), Handler)
+    if "--engine" in sys.argv:
+        try:
+            paper_store()
+            from autotrade.paper.run import start_in_thread
+
+            start_in_thread()
+            print("모의 투자 엔진: 켜짐 (가짜 돈, 주문 없음). 이 창을 닫으면 단타 기록도 멈춥니다.", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"모의 투자 엔진을 켜지 못했습니다: {e}", flush=True)
     print(f"이 컴퓨터에서: http://127.0.0.1:{PORT}", flush=True)
     if LAN:
         for a in lan_addresses():

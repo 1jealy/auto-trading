@@ -32,7 +32,12 @@ python -m venv .venv
 
 ## 코인 모니터 (실시간 시세 + 모의 계좌)
 
-화면은 두 개입니다.
+화면은 세 개입니다.
+
+- **모의 투자** — 가짜 돈으로 여러 전략을 동시에 시험합니다(실제 주문 없음). 전략 대결표, 실시간 단타(#17·#18) 기록과 거래별 호가창 대조,
+  해외→국내 지연 관측, 느린 전략(#12·#13·#14)과 비교 기준, 실제 호가로 잰 비용. 규칙은 `docs/experiments.md`, 계획은 `docs/plan.md`.
+  엔진은 `코인시세.bat`/`코인모니터_폰연결.bat`을 켜 둔 동안 돕니다(단타·호가 비용은 켜져 있던 시간만 기록, 느린 전략은 나중에 다시 계산).
+  기록은 `data/paper/`에 쌓입니다. 공개 주소(GitHub Pages)에는 기록이 없습니다.
 
 - **내 계좌** — 총 자산, 손익, 비트코인 보유량·평균 산 가격, 계좌 가치 그래프, 알림 조건(가격 상한·하한, 손익률), 실험 #5 시간대 표시, 거래 내역.
   지금은 **모의 계좌**입니다(`crypto_live/static/mock_account.json`의 예시 기록 + 실제 실시간 가격). 주문 기능은 없습니다.
@@ -57,11 +62,12 @@ python -m venv .venv
 폰·패드에서 **홈 화면에 추가**하면 앱처럼 열립니다(안드로이드 크롬: 메뉴 → 홈 화면에 추가 / 아이패드 사파리: 공유 → 홈 화면에 추가).
 
 - PC 서버로 열면 `crypto_live/account.json`을 만들어 두면 예시 대신 그 기록을 씁니다(Git에 안 올라감).
-- 서버는 파이썬 표준 라이브러리만 쓰고, 정해 둔 공개 시세 주소만 대신 불러 줍니다.
+- 서버는 정해 둔 공개 시세 주소만 대신 불러 줍니다. 모의 투자 엔진(`--engine`)은 pandas·requests 를 씁니다.
 
 ```bash
-.venv/Scripts/python crypto_live/server.py 8765          # 이 PC에서만
-.venv/Scripts/python crypto_live/server.py 8765 --lan    # 같은 와이파이 (PIN)
+.venv/Scripts/python crypto_live/server.py 8765 --engine         # 이 PC에서만 + 모의 투자 엔진
+.venv/Scripts/python crypto_live/server.py 8765 --lan --engine   # 같은 와이파이 (PIN)
+.venv/Scripts/python scripts/paper_engine.py                     # 엔진만 (화면 없이 기록)
 ```
 
 ## 새 전략 추가하기

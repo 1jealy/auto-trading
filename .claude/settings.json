@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)",
+      "Read(./.kis_token.json)",
+      "Read(./crypto_live/.pin)",
+      "Read(./crypto_live/account.json)",
+      "Read(./**/*.key)",
+      "Read(./secrets/**)",
+      "Bash(cat .env)",
+      "Bash(cat ./.env)"
+    ],
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(.venv/Scripts/python -m pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}

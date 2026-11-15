@@ -1,484 +1,409 @@
-/* 모의 투자 화면 — 시작일 이후 실제 시세에 실험 #8 규칙(strategy.js)을 적용해 매번 다시 계산한다.
- * 저장하는 것이 없어서 어느 기기에서 열어도 같은 결과가 나온다(같은 거래소 시세 기준).
+/* 모의 투자 화면 — 엔진(src/autotrade/paper)이 남긴 기록을 서버(/api/paper/*)에서 읽어 보여 준다.
+ * 계산은 전부 엔진이 한다. 이 파일은 그리기만 한다.
  */
 "use strict";
 
-const KST = 9 * 3600, BAR = 4 * 3600;
+const KST = 9 * 3600;
 const $ = (id) => document.getElementById(id);
-const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* 없어도 동작 */ } },
 };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const won = (v, sign = false) => (v == null || !isFinite(v) ? "—" : `${sign && v > 0 ? "+" : ""}${Math.round(v).toLocaleString("ko-KR")}원`);
 const pct = (v, d = 2, sign = true) => (v == null || !isFinite(v) ? "—" : `${sign && v > 0 ? "+" : ""}${(v * 100).toFixed(d)}%`);
+const num = (v, d = 0) => (v == null || !isFinite(v) ? "—" : v.toLocaleString("ko-KR", { maximumFractionDigits: d }));
 const dirOf = (v) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
-function kst(sec, withYear = false) {
-  const d = new Date((sec + KST) * 1000), p = (n) => String(n).padStart(2, "0");
-  return `${withYear ? `${d.getUTCFullYear()}.` : ""}${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+const p2 = (n) => String(n).padStart(2, "0");
+function clock(sec, withDate = false) {
+  const d = new Date((sec + KST) * 1000);
+  const hms = `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`;
+  return withDate ? `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${hms}` : hms;
+}
+function span(sec) {
+  if (sec == null || !isFinite(sec)) return "—";
+  sec = Math.max(0, Math.round(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d) return `${d}일 ${h}시간`;
+  if (h) return `${h}시간 ${m}분`;
+  if (m) return `${m}분 ${sec % 60}초`;
+  return `${sec}초`;
+}
+const icon = (name) => `<svg width="20" height="20" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+
+const S = { data: null, seen: {}, trades: {}, tradeN: {}, failed: 0 };
+const SLOW_INFO = {
+  s13: { desc: "선물 펀딩비와 김치 프리미엄이 과열이 아니고, 가격이 20일 평균 위일 때만 비트코인을 듭니다. 매일 아침 9시에 확인.", color: "--s-b" },
+  s14: { desc: "비트코인·이더리움·리플·솔라나 중 흔들림 대비 가장 잘 오른 둘을 50%씩. 다 내리는 중이면 현금. 매주 월요일 아침 9시.", color: "--s-c" },
+  s12: { desc: "ETF 5개를 덜 흔들리는 것일수록 많이 담고, 주식 두 개만 120일 평균 아래면 단기채권으로 피합니다. 매주 마지막 거래일 장 마감 뒤 계산, 다음 거래일 아침 체결.", color: "--s-a" },
+  c_btc: { color: "--ink-3", dash: "" },
+  c_etf4: { color: "--ink-3", dash: "7 4" },
+  c_kodex: { color: "--ink-3", dash: "2 4" },
+};
+const SCALP_NAMES = { s17: "#17 틈 단타 (정식)", s18: "#18 계속 거래되는 단타" };
+
+/** 내용이 바뀐 부분만 다시 그린다 (2초마다 전체를 갈아 끼우면 깜빡이고 가리키던 곳이 풀린다) */
+function changed(key, value) {
+  const s = JSON.stringify(value);
+  if (S.seen[key] === s) return false;
+  S.seen[key] = s;
+  return true;
 }
 
-const S = { cfg: null, start: 0, official: true, hours: new Map(), price: null, ws: null, retry: 0, lastMsg: 0, model: null, chart: null };
+async function getJSON(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (r.status === 401) { location.href = `/login.html?next=${encodeURIComponent(location.pathname)}`; throw new Error("PIN 필요"); }
+  const b = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((b && b.error) || `HTTP ${r.status}`);
+  return b;
+}
 
-/* ── 데이터 ── */
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-async function getJSON(url, tries = 6) {
-  for (let k = 0; ; k++) {
-    const r = await fetch(url, { cache: "no-store" });
-    if (r.status === 429 && k < tries) { await sleep(600 * 2 ** k); continue; } // 요청이 몰려 거절됨 → 잠깐 쉬고 다시
-    if (r.status === 401 && NET.mode === "server") { location.href = `/login.html?next=${encodeURIComponent(location.pathname)}`; throw new Error("PIN 필요"); }
-    const b = await r.json().catch(() => null);
-    if (!r.ok) throw new Error((b && (b.error?.message || b.error)) || `HTTP ${r.status}`);
-    return b;
+/* ── 엔진 상태 ── */
+function renderEngine(d) {
+  const e = d.engine, badge = $("eng-badge");
+  badge.dataset.state = e.alive ? "live" : "wait";
+  badge.textContent = e.alive ? "기록 중" : "꺼져 있음";
+  $("eng-since").textContent = d.uptime.first ? `첫 기록 ${clock(d.uptime.first, true).slice(0, -3)}` : "";
+  $("eng-line").textContent = e.alive
+    ? "단타와 호가 비용을 실시간으로 기록하고 있어요."
+    : (e.last ? `마지막 기록 ${clock(e.last, true)}. 코인시세.bat 을 켜면 단타 기록이 다시 시작돼요.` : "아직 한 번도 켜지 않았어요. 코인시세.bat 으로 켭니다.");
+  const facts = [
+    ["해외 가격", e.source_name],
+    ["켜져 있던 시간", span(d.uptime.seconds)],
+    ["확인 한 번에", e.loop_ms ? `${(e.loop_ms / 1000).toFixed(2)}초` : "—"],
+    ["느린 전략 계산", d.slow ? clock(d.slow.updated, true).slice(0, -3) : "아직"],
+  ];
+  $("eng-facts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
+  const warn = [];
+  if (!e.official) warn.push(`바이낸스 선물에 연결되지 않아 <b>${esc(e.source_name)}</b> 가격으로 대신하고 있어요. 이 기록은 시험용이라 #17 채점에 넣지 않습니다. 한국에서 켠 컴퓨터에서는 바이낸스로 연결됩니다.`);
+  if (e.errors && e.errors.feed) warn.push(`시세를 받지 못하고 있어요: ${esc(e.errors.feed)}`);
+  $("eng-warn").hidden = !warn.length;
+  $("eng-warn").innerHTML = warn.join("<br>");
+  document.querySelectorAll("[data-source]").forEach((el) => { el.textContent = e.source_name; });
+  const st = $("status");
+  st.dataset.state = e.alive ? "live" : "closed";
+  $("status-text").textContent = e.alive ? "기록 중" : "엔진 꺼짐";
+}
+
+/* ── 대결 ── */
+function rankRows(d) {
+  const rows = [];
+  for (const key of ["s18", "s17"]) {
+    const s = d.scalp[key];
+    rows.push({ name: SCALP_NAMES[key], kind: "단타", control: false, value: s.value, ret: s.value / s.capital - 1,
+      note: s.n ? `${num(s.n)}건` : "아직 거래 없음", started: s.n > 0 });
   }
-}
-function addHours(rows) {
-  for (const r of rows) {
-    const t = Math.floor(Date.parse(`${r.candle_date_time_utc}Z`) / 1000);
-    S.hours.set(t, { t, o: +r.opening_price, h: +r.high_price, l: +r.low_price, c: +r.trade_price });
+  for (const it of Object.values((d.slow && d.slow.items) || {})) {
+    const control = it.kind === "control";
+    if (it.error) { rows.push({ name: it.name, control, error: true, note: "자료를 받지 못함" }); continue; }
+    rows.push({ name: it.name, control, value: it.value, ret: it.ret, started: it.trades.length > 0,
+      note: it.trades.length ? `거래 ${it.trades.length}번` : `${it.start} 시작 · 첫 체결 전` });
   }
+  rows.sort((a, b) => (b.started ? 1 : 0) - (a.started ? 1 : 0) || (b.ret ?? -9) - (a.ret ?? -9));
+  return rows;
 }
-/** fromSec 까지 거슬러 올라가며 1시간 캔들을 모은다 */
-async function loadHistory(fromSec, onProgress) {
-  let to = 0, page = 0;
-  const need = Math.ceil((Date.now() / 1000 - fromSec) / 3600 / 200) + 1;
-  while (page < Math.min(need, 140)) {
-    const rows = await getJSON(NET.hourCandles(S.cfg.market, to));
-    if (!Array.isArray(rows) || !rows.length) break;
-    addHours(rows);
-    page += 1;
-    onProgress?.(page, need);
-    await sleep(NET.mode === "server" ? 150 : 50); // 거래소 요청 한도 여유
-    const oldest = Math.floor(Date.parse(`${rows[rows.length - 1].candle_date_time_utc}Z`) / 1000);
-    if (oldest <= fromSec || rows.length < 200) break;
-    to = oldest;
-  }
-}
-async function refreshLatest() {
-  addHours(await getJSON(NET.hourCandles(S.cfg.market, 0)));
+function renderRank(d) {
+  const rows = rankRows(d);
+  if (!changed("rank", rows)) return;
+  const max = Math.max(0.002, ...rows.map((r) => Math.abs(r.ret || 0)));
+  $("rank").innerHTML = rows.map((r, i) => `
+    <li class="race-row${r.control ? " control" : ""}">
+      <span class="rank">${r.started ? i + 1 : "·"}</span>
+      <span class="name">${esc(r.name)} <small>${esc(r.note)}</small></span>
+      <span class="ret" data-dir="${dirOf(r.ret)}">${r.error ? "—" : `${won(r.value)} <small>${pct(r.ret)}</small>`}</span>
+      <span class="race-bar"><i data-dir="${dirOf(r.ret)}" style="width:${r.ret ? Math.max(2, Math.abs(r.ret) / max * 100) : 0}%"></i></span>
+    </li>`).join("");
 }
 
-/* ── 계산 ── */
-function compute() {
-  const now = Date.now() / 1000;
-  const hours = [...S.hours.values()].sort((a, b) => a.t - b.t);
-  const all = STRAT.to4h(hours);
-  const d = STRAT.indicators(all);
-  const closedN = d.filter((b) => b.t + BAR <= now).length; // 마감된 캔들 수 (마지막 하나는 진행 중일 수 있음)
-  const closed = d.slice(0, closedN);
-  const startI = closed.findIndex((b) => b.t >= S.start);
-  const ready = closed.findIndex((b) => !Number.isNaN(b.rank));
-  const first = Math.max(startI < 0 ? closed.length : startI, ready < 0 ? closed.length : ready);
-  const { pos, events, stops } = STRAT.positions(closed, first);
-  const posAll = d.map((_, i) => (i < closedN ? pos[i] : false));
-  const fpos = STRAT.filterPositions(closed, first).concat(d.slice(closedN).map(() => false));
-  const cost = S.cfg.side_cost, cap = S.cfg.capital;
-  const eq = STRAT.equity(d, posAll, cost, cap);
-  const eqF = STRAT.equity(d, fpos, cost, cap);
-  const startBar = d.findIndex((b) => b.t >= S.start);
-  return { d, closed, closedN, first, pos, posAll, fpos, events, stops, eq, eqF, startBar, cost, cap };
-}
-
-/** 마지막 캔들 동안 들고 있는지 (그 직전 캔들 마감 때의 결정) */
-function heldInLastBar(d, posAll) {
-  const j = d.length - 1;
-  return j > 0 && posAll[j - 1];
-}
-/** 지금 값: 마지막 캔들 시가의 값에서 그 시가의 매수·매도 비용을 반영하고, 들고 있으면 지금 가격까지의 변화를 곱한다 */
-function valueNow(d, values, posAll, cost, livePrice) {
-  const j = d.length - 1;
-  const held = j > 0 && posAll[j - 1], before = j > 1 && posAll[j - 2];
-  let v = values[j];
-  if (held && !before) v /= 1 + cost;
-  if (!held && before) v *= 1 - cost;
-  if (held) v *= (livePrice ?? d[j].c) / d[j].o;
-  return v;
-}
-
-/* ── 그리기 ── */
-function render() {
-  const m = S.model;
-  if (!m) return;
-  const now = Date.now() / 1000;
-  const lastClosed = m.closed[m.closed.length - 1];
-  const holdingNow = heldInLastBar(m.d, m.posAll);
-  const value = valueNow(m.d, m.eq.value, m.posAll, m.cost, S.price);
-  const pnl = value - m.cap;
-  $("value").textContent = won(value);
-  const p = $("value-pnl");
-  p.dataset.dir = dirOf(pnl);
-  p.querySelector("span").textContent = `${won(pnl, true)} (${pct(pnl / m.cap)}) 시작 ${won(m.cap)} 대비`;
-  const days = Math.max(0, Math.floor((now - S.start) / 86400));
-  $("dday").textContent = now >= S.start ? `D+${days}` : `시작 전`;
-
-  const badge = $("state-badge");
-  if (holdingNow) {
-    const buyE = [...m.events].reverse().find((e) => e.type === "buy");
-    const held = buyE ? (now - m.closed[buyE.i].t - BAR) / 86400 : 0;
-    badge.dataset.state = "hold";
-    badge.textContent = "들고 있어요";
-    $("state-line").textContent = `${held >= 1 ? `${Math.floor(held)}일째` : "오늘 산"} 비트코인을 들고 있어요. 추적 손절선 아래로 마감하면 팝니다.`;
-  } else {
-    const ok = checkStates(lastClosed);
-    badge.dataset.state = "wait";
-    badge.textContent = "쉬는 중";
-    $("state-line").textContent = ok.count === 3 ? "조건이 다 맞았어요. 다음 캔들 시작에 삽니다."
-      : `현금으로 기다리는 중이에요. 사는 조건 3개 중 ${ok.count}개가 맞아요.`;
-  }
-
-  renderRace(m, value, now);
-  renderChecks(m, lastClosed, holdingNow);
-  renderHolding(m, holdingNow);
-  renderTimeline(m);
-  renderExpect(m, value, now);
-  document.title = `${won(value)} · 모의 투자`;
-}
-
-function checkStates(b) {
-  if (!b) return { count: 0 };
-  const trend = b.c > b.sma, squeeze = b.recent, brk = b.c > b.dc;
-  return { trend, squeeze, brk, count: [trend, squeeze, brk].filter(Boolean).length };
-}
-
-function renderRace(m, value, now) {
-  const list = $("race");
-  if (m.startBar < 0 || now < S.start) {
-    list.replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "시작하면 여기서 대결이 시작돼요." }));
+/* ── 지금 해외와 국내 ── */
+function renderLive(d) {
+  const live = d.live, body = $("live-rows");
+  if (!live || !live.coins || !Object.keys(live.coins).length) {
+    if (changed("live", null)) body.innerHTML = `<tr><td colspan="6" class="empty">엔진이 켜지면 보여요</td></tr>`;
     return;
   }
-  const px = S.price ?? m.d[m.d.length - 1].c;
-  const hold = m.cap * (px / m.d[m.startBar].o) / (1 + m.cost);
-  const filt = valueNow(m.d, m.eqF.value, m.fpos, m.cost, S.price);
-  const rows = [
-    { name: "모의 투자 (실험 #8)", v: value, me: true },
-    { name: "비트코인 그냥 보유", v: hold },
-    { name: "60일선 위에서만 보유", v: filt },
-  ].filter((r) => r.v != null).sort((a, b) => b.v - a.v);
-  const maxAbs = Math.max(...rows.map((r) => Math.abs(r.v / m.cap - 1)), 0.005);
-  list.replaceChildren(...rows.map((r, i) => {
-    const li = document.createElement("li");
-    li.className = `race-row${r.me ? " me" : ""}`;
-    const rank = document.createElement("span"); rank.className = "rank"; rank.textContent = `${i + 1}`;
-    const name = document.createElement("span"); name.className = "name"; name.textContent = r.name;
-    const ret = r.v / m.cap - 1;
-    const val = document.createElement("span"); val.className = "ret"; val.dataset.dir = dirOf(ret); val.textContent = pct(ret);
-    const bar = document.createElement("span"); bar.className = "race-bar";
-    const fill = document.createElement("i"); fill.dataset.dir = dirOf(ret);
-    fill.style.width = `${Math.max(2, (Math.abs(ret) / maxAbs) * 100)}%`;
-    bar.append(fill);
-    li.append(rank, name, val, bar);
-    return li;
-  }));
+  const now = d.now;
+  body.innerHTML = Object.entries(live.coins).map(([coin, c]) => {
+    const held = live.positions.filter((p) => p.coin === coin)
+      .map((p) => `<span class="chip chip-hold">#${p.key.slice(1)} 보유 · ${Math.max(0, Math.round(p.exit_due - now))}초 안에 팜</span>`).join(" ");
+    const lagCls = c.lag >= 0.002 ? "hot" : c.lag >= 0.0005 ? "warm" : "";
+    return `<tr>
+      <th scope="row"><span class="coin-cell" data-coin="${coin}"></span>${coin}</th>
+      <td data-dir="${dirOf(c.move)}">${pct(c.move, 3)}</td>
+      <td data-dir="${dirOf(c.u_move)}">${pct(c.u_move, 3)}</td>
+      <td class="lag ${lagCls}">${c.lag == null ? "—" : `${(c.lag * 100).toFixed(3)}%p`}</td>
+      <td>${pct(c.spread, 3, false)}${c.one_tick ? " <small>한 칸</small>" : ""}</td>
+      <td>${held || '<span class="muted">기다리는 중</span>'}</td></tr>`;
+  }).join("");
+  body.querySelectorAll(".coin-cell").forEach((el) => el.replaceWith(COIN_LOGO.el(el.dataset.coin, 20)));
 }
 
-function checkItem(ok, title, detail, meter) {
-  const li = document.createElement("li");
-  li.className = `check ${ok ? "ok" : "no"}`;
-  const ic = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  ic.setAttribute("width", "22"); ic.setAttribute("height", "22"); ic.setAttribute("aria-hidden", "true");
-  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-  use.setAttribute("href", ok ? "#i-ok" : "#i-no");
-  ic.append(use);
-  const body = document.createElement("div");
-  const t = document.createElement("p"); t.className = "check-title"; t.textContent = title;
-  const s = document.createElement("p"); s.className = "check-detail"; s.textContent = detail;
-  body.append(t, s);
-  if (meter != null) {
-    const mt = document.createElement("div"); mt.className = "meter small";
-    const f = document.createElement("i"); f.style.width = `${Math.max(3, Math.min(100, meter * 100))}%`;
-    mt.append(f); body.append(mt);
-  }
-  li.append(ic, body);
-  return li;
-}
-
-function renderChecks(m, b, holdingNow) {
-  if (!b) return;
-  const c = checkStates(b);
-  const px = S.price ?? b.c;
-  const trendGap = b.c / b.sma - 1;
-  const lastSq = [...m.closed].reverse().findIndex((x) => x.squeeze);
-  const sqAgo = lastSq < 0 ? null : lastSq * 4;
-  const toBreak = b.dc / px - 1;
-  $("check-sub").textContent = holdingNow
-    ? "지금은 들고 있어서 새로 사지 않아요. 참고로 마지막 캔들 기준 상태입니다."
-    : `마지막으로 끝난 캔들(${kst(b.t + BAR)} 마감) 기준. 세 가지가 모두 맞으면 다음 캔들 시작에 삽니다.`;
-  $("checks").replaceChildren(
-    checkItem(c.trend, "상승 추세: 60일 평균 위",
-      `종가 ${won(b.c)} · 60일 평균 ${won(b.sma)} (${pct(trendGap)})`, null),
-    checkItem(c.squeeze, "힘 모으기: 최근 하루 안에 변동성 응축",
-      `지금 변동 폭은 최근 6개월 중 하위 ${Math.round((b.rank || 0) * 100)}% · ${sqAgo === null ? "최근 응축 없음" : sqAgo === 0 ? "지금 응축 중" : `마지막 응축 ${sqAgo}시간 전`} (하위 20% 이하가 응축)`,
-      Number.isNaN(b.rank) ? null : Math.max(0, 1 - b.rank)),
-    checkItem(c.brk, "돌파: 최근 20개 캔들 최고가 위로 마감",
-      c.brk ? `종가 ${won(b.c)} > 최고가 ${won(b.dc)}` : `최고가 ${won(b.dc)}까지 ${pct(toBreak)} 남음 (지금 ${won(px)})`,
-      c.brk ? 1 : Math.max(0, 1 - toBreak / 0.05)),
-  );
-}
-
-function renderHolding(m, holdingNow) {
-  $("holding-card").hidden = !holdingNow;
-  if (!holdingNow) return;
-  const buyE = [...m.events].reverse().find((e) => e.type === "buy");
-  const entryBar = m.d[buyE.i + 1];
-  const buy = entryBar.o;
-  const px = S.price ?? m.closed[m.closedN - 1].c;
-  const stop = m.stops[m.closedN - 1];
-  const lastB = m.closed[m.closedN - 1];
-  const net = (px / buy) * (1 - m.cost) / (1 + m.cost) - 1;
-  const rows = [
-    ["산 시각", kst(entryBar.t)], ["산 가격", won(buy)], ["지금 가격", won(px)],
-    ["지금 팔면 (비용 포함)", `${pct(net)}`], ["추적 손절선", won(stop)], ["60일 평균", won(lastB.sma)],
-  ];
-  $("holding").replaceChildren(...rows.flatMap(([k, v]) => {
-    const div = document.createElement("div");
-    const dt = document.createElement("dt"); dt.textContent = k;
-    const dd = document.createElement("dd"); dd.textContent = v;
-    if (k.startsWith("지금 팔면")) dd.dataset.dir = dirOf(net);
-    div.append(dt, dd);
-    return [div];
-  }));
-  const dist = px / stop - 1;
-  $("stop-dist").textContent = `${pct(dist)} 남음`;
-  $("stop-meter").style.width = `${Math.max(3, Math.min(100, (dist / 0.15) * 100))}%`;
-  $("stop-meter").dataset.danger = dist < 0.02 ? "true" : "false";
-}
-
-function renderTimeline(m) {
-  const items = [];
-  if (S.start <= Date.now() / 1000) items.push({ t: S.start, kind: "start", text: `모의 투자 시작 — ${won(m.cap)}` });
-  let prevSq = false;
-  for (let i = Math.max(m.first, 0); i < m.closed.length; i++) {
-    const b = m.closed[i];
-    if (b.squeeze && !prevSq) items.push({ t: b.t + BAR, kind: "squeeze", text: "변동 폭이 줄었어요(응축). 돌파를 기다려요." });
-    prevSq = b.squeeze;
-  }
-  const trades = m.eq.trades;
-  for (const e of m.events) {
-    const execBar = m.d[e.i + 1];
-    if (!execBar) continue;
-    if (e.type === "buy") {
-      items.push({ t: execBar.t, kind: "buy", text: `${e.why}! ${won(execBar.o)}에 샀어요.` });
-    } else {
-      const tr = trades.find((x) => x.exitI === e.i + 1);
-      items.push({ t: execBar.t, kind: "sell", text: `${e.why} → ${won(execBar.o)}에 팔았어요${tr ? ` (${pct(tr.net)})` : ""}.`, dir: tr ? dirOf(tr.net) : "flat" });
-    }
-  }
-  items.sort((a, b) => b.t - a.t);
-  const list = $("timeline");
-  if (!items.length) {
-    list.replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "아직 일어난 일이 없어요. 시작을 기다리는 중입니다." }));
+/* ── 지연 관측 ── */
+function renderRadar(d) {
+  const r = d.radar;
+  if (!changed("radar", r)) return;
+  if (!r || !r.n) {
+    CHART.line($("radar-chart"), { series: [], empty: "해외가 3초에 +0.15% 넘게 오르는 일이 생기면 여기에 쌓여요" });
+    $("radar-keys").innerHTML = ""; $("radar-table").innerHTML = ""; $("radar-note").textContent = "";
     return;
   }
-  list.replaceChildren(...items.slice(0, 60).map((it) => {
-    const li = document.createElement("li");
-    li.className = `tl ${it.kind}`;
-    const when = document.createElement("span"); when.className = "when"; when.textContent = kst(it.t);
-    const what = document.createElement("span"); what.className = "what"; what.textContent = it.text;
-    if (it.dir) what.dataset.dir = it.dir;
-    li.append(when, what);
-    return li;
-  }));
-}
-
-function renderExpect(m, value, now) {
-  const ex = S.cfg.expect, tr = m.eq.trades;
-  const yrs = Math.max(1 / 365, (now - S.start) / (365 * 86400));
-  const vals = m.eq.value.slice(Math.max(0, m.startBar)).concat([value]);
-  let peak = -Infinity, mdd = 0;
-  for (const v of vals) { peak = Math.max(peak, v); mdd = Math.min(mdd, v / peak - 1); }
-  const inv = m.pos.slice(m.first).filter(Boolean).length / Math.max(1, m.closed.length - m.first);
-  const wins = tr.filter((t) => t.net > 0).length;
-  const rows = [
-    ["1년 거래 수", `${ex.trades_per_year.toFixed(0)}번`, tr.length ? `${tr.length}번 (1년 환산 ${(tr.length / yrs).toFixed(0)}번)` : "아직 없음"],
-    ["이긴 비율", pct(ex.win_rate, 0, false), tr.length ? pct(wins / tr.length, 0, false) : "—"],
-    ["거래당 평균", pct(ex.avg_trade), tr.length ? pct(tr.reduce((s, t) => s + t.net, 0) / tr.length) : "—"],
-    ["가장 크게 떨어졌을 때", pct(ex.max_drawdown, 1), pct(mdd, 1)],
-    ["돈이 들어가 있던 시간", pct(ex.invested, 0, false), pct(inv, 0, false)],
+  const series = [
+    { name: "평균", color: "--s-c", points: r.curve.map((c) => [c.offset, c.catch * 100]) },
+    { name: "가운데 값", color: "--s-b", points: r.curve.map((c) => [c.offset, c.catch_median * 100]) },
   ];
-  $("expect").replaceChildren(...rows.map((r) => {
-    const tr2 = document.createElement("tr");
-    r.forEach((c, i) => { const el = document.createElement(i ? "td" : "th"); if (!i) el.scope = "row"; el.textContent = c; tr2.append(el); });
-    return tr2;
-  }));
-  $("ex-note").textContent = tr.length < 10
-    ? `거래가 ${tr.length}번뿐이라 아직 비교하기 일러요. 10번 이상 쌓이면 기대 범위 안인지 볼 만해집니다. 검증 기간 수익률은 연 ${pct(ex.cagr, 1)}였습니다.`
-    : `가장 크게 떨어졌을 때가 검증 기간(${pct(ex.max_drawdown, 1)})보다 훨씬 나쁘면 규칙이 지금 시장에 안 맞는다는 신호일 수 있어요.`;
+  if (r.days > 1) series.push({ name: "가장 많았던 하루를 빼면", color: "--ink-3", dash: "6 4",
+    points: r.curve.filter((c) => c.catch_ex_top_day != null).map((c) => [c.offset, c.catch_ex_top_day * 100]) });
+  $("radar-keys").innerHTML = series.map((s) => `<li><span class="key key-line" style="background:var(${s.color})"></span>${s.name}</li>`).join("");
+  const xf = (x) => (x === 0 ? "신호 때" : `${x}초 뒤`);
+  CHART.line($("radar-chart"), { series, categorical: true, xFmt: xf, yFmt: (v) => `${Math.round(v)}%`, lines: [{ y: 100, label: "다 따라옴" }] });
+  $("radar-table").innerHTML = `<table class="cost"><thead><tr><th scope="col">언제</th><th scope="col">평균</th><th scope="col">가운데 값</th><th scope="col">실제 잰 시점</th><th scope="col">횟수</th></tr></thead><tbody>${
+    r.curve.map((c) => `<tr><th scope="row">${xf(c.offset)}</th><td>${Math.round(c.catch * 100)}%</td><td>${Math.round(c.catch_median * 100)}%</td><td>${c.actual.toFixed(2)}초</td><td>${num(c.n)}</td></tr>`).join("")}</tbody></table>`;
+  $("radar-note").textContent = `${num(r.n)}번 관찰 · ${r.days}일 · 가장 많았던 날 ${r.top_day} (${num(r.top_day_n)}번) · 그때 해외 오름폭 평균 ${pct(r.mean_move, 2)}. `
+    + "100%에 빨리 닿을수록 틈이 금방 사라진다는 뜻이에요. '실제 잰 시점'이 목표보다 많이 늦으면 인터넷이 느린 곳에서 잰 기록입니다.";
 }
 
-/* ── 차트 ── */
-function buildChart() {
-  S.chart = LightweightCharts.createChart($("p-chart"), {
-    autoSize: true,
-    layout: { background: { color: css("--surface") }, textColor: css("--ink-2"), fontFamily: css("--font"), fontSize: 12 },
-    grid: { vertLines: { visible: false }, horzLines: { color: css("--hair") } },
-    rightPriceScale: { borderColor: css("--axis") },
-    timeScale: { borderColor: css("--axis"), timeVisible: true, secondsVisible: false },
-    localization: { locale: "ko-KR", priceFormatter: (v) => Math.round(v).toLocaleString("ko-KR"), timeFormatter: (t) => kst(t - KST) },
-    handleScroll: { vertTouchDrag: false },
-  });
-  S.series = {
-    band: S.chart.addHistogramSeries({ priceScaleId: "band", priceLineVisible: false, lastValueVisible: false }),
-    candles: S.chart.addCandlestickSeries({ priceLineWidth: 1 }),
-    sma: S.chart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    dc: S.chart.addLineSeries({ lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-  };
-  S.stopSeries = []; // 거래마다 따로 그림 (거래 사이를 잇지 않도록)
-  // 응축은 차트 아래쪽 얇은 띠로만 표시
-  S.chart.priceScale("band").applyOptions({ visible: false, scaleMargins: { top: 0.955, bottom: 0 } });
-  themeChart();
+/* ── 단타 카드 ── */
+function criteria(s, official) {
+  const need = s.rules.min_trades, enough = s.n >= need;
+  const mark = (ok, ready = true) => (!ready ? "wait" : ok ? "ok" : "no");
+  const rows = [
+    ["건당 평균이 플러스 (업비트 비용 뺀 것)", s.n ? pct(s.mean_net, 3) : "거래 없음", mark(s.mean_net > 0, s.n > 0)],
+    ["우연이 아닐 것 (t값 2.5 이상)", s.t == null ? "거래가 더 필요해요" : `t값 ${s.t.toFixed(2)}`, mark(s.t >= 2.5, s.t != null)],
+    ["가장 많이 번 3일을 빼도 플러스", s.mean_ex_top3 == null ? "날짜가 4일 이상 필요해요" : pct(s.mean_ex_top3, 3), mark(s.mean_ex_top3 > 0, s.mean_ex_top3 != null)],
+    ["앞 절반·뒤 절반 모두 플러스", s.first_half == null ? "거래가 더 필요해요" : `${pct(s.first_half, 3)} / ${pct(s.second_half, 3)}`, mark(s.first_half > 0 && s.second_half > 0, s.first_half != null)],
+  ];
+  const head = !official ? "시험 기록이라 채점에 넣지 않아요 (참고로만 표시)"
+    : enough ? `거래 ${num(s.n)}건 — 채점할 수 있어요` : `거래 ${num(s.n)} / ${num(need)}건 — 아직 채점 전 (지금 값은 참고)`;
+  return `<h3 class="mini-title">채점 <small>${head}</small></h3><ul class="check-list crit">${rows.map(([t, v, m]) => `
+    <li class="check ${m}">${icon(m)}<div><p class="check-title">${t}</p><p class="check-detail">${v}</p></div></li>`).join("")}</ul>`;
 }
-function themeChart() {
-  if (!S.chart) return;
-  S.chart.applyOptions({ layout: { background: { color: css("--surface") }, textColor: css("--ink-2") },
-    grid: { horzLines: { color: css("--hair") } }, rightPriceScale: { borderColor: css("--axis") }, timeScale: { borderColor: css("--axis") } });
-  const up = css("--up"), dn = css("--down");
-  S.series.candles.applyOptions({ upColor: up, downColor: dn, borderUpColor: up, borderDownColor: dn, wickUpColor: up, wickDownColor: dn });
-  S.series.sma.applyOptions({ color: css("--ma60") });
-  S.series.dc.applyOptions({ color: css("--ink-3") });
-  S.series.band.applyOptions({ color: css("--warn") });
-  if (S.model) drawChart();
+function groupTable(title, groups) {
+  const keys = Object.keys(groups || {});
+  if (!keys.length) return "";
+  return `<div class="table-scroll"><table class="cost tbl-s"><thead><tr><th scope="col">${title}</th><th scope="col">횟수</th><th scope="col">건당 평균</th></tr></thead><tbody>${
+    keys.sort((a, b) => groups[b].n - groups[a].n).map((k) => `<tr><th scope="row">${esc(k)}</th><td>${num(groups[k].n)}</td><td data-dir="${dirOf(groups[k].mean)}">${pct(groups[k].mean, 3)}</td></tr>`).join("")}</tbody></table></div>`;
 }
-function drawChart() {
-  const m = S.model, from = S.start - 30 * 86400;
-  const view = m.d.filter((b) => b.t >= from);
-  const T = (t) => t + KST;
-  S.series.candles.setData(view.map((b) => ({ time: T(b.t), open: b.o, high: b.h, low: b.l, close: b.c })));
-  S.series.sma.setData(view.filter((b) => !Number.isNaN(b.sma)).map((b) => ({ time: T(b.t), value: b.sma })));
-  S.series.dc.setData(view.filter((b) => isFinite(b.dc)).map((b) => ({ time: T(b.t), value: b.dc })));
-  S.series.band.setData(view.map((b) => ({ time: T(b.t), value: b.squeeze ? 1 : 0 })));
-  // 추적 손절선: 보유 구간마다 따로 선을 만든다
-  S.stopSeries.forEach((s) => S.chart.removeSeries(s));
-  S.stopSeries = [];
-  let seg = [];
-  const flush = () => {
-    if (seg.length) {
-      const s = S.chart.addLineSeries({ color: css("--bad"), lineWidth: 2, priceLineVisible: false,
-        lastValueVisible: false, crosshairMarkerVisible: false });
-      s.setData(seg);
-      S.stopSeries.push(s);
-    }
-    seg = [];
-  };
-  m.d.forEach((b, i) => {
-    if (i < m.closedN && b.t >= from && isFinite(m.stops[i])) seg.push({ time: T(b.t), value: m.stops[i] });
-    else flush();
+function renderScalp(d, key) {
+  const s = d.scalp[key], box = document.querySelector(`.scalp-body[data-key="${key}"]`);
+  if (!changed(`scalp-${key}`, [s, d.engine.official])) return;
+  const pnl = s.value - s.capital;
+  const tiles = [
+    ["계좌 가치", won(s.value), `<span class="pnl-inline" data-dir="${dirOf(pnl)}">${won(pnl, true)} (${pct(pnl / s.capital)})</span>`],
+    ["거래", `${num(s.n)}건`, s.n ? `오늘 ${num(s.today)}건 · ${s.days}일` : "아직 없음"],
+    ["건당 평균", `<span data-dir="${dirOf(s.mean_net)}">${pct(s.mean_net, 3)}</span>`, `비용 빼기 전 ${pct(s.mean_gross, 3)}`],
+    ["이긴 비율", s.n ? pct(s.win_rate, 0, false) : "—", "수수료까지 빼고 남은 거래"],
+    ["코인원이었다면", `<span data-dir="${dirOf(s.mean_alt)}">${pct(s.mean_alt, 3)}</span>`, s.n_alt ? `수수료 0% 가정 · ${num(s.n_alt)}건 비교` : "수수료 0% 가정"],
+  ];
+  box.innerHTML = `
+    <div class="tiles">${tiles.map(([l, v, sub]) => `<div class="tile"><span class="tile-label">${l}</span><b>${v}</b><small>${sub}</small></div>`).join("")}</div>
+    <h3 class="mini-title">누적 손익 <small>거래가 끝날 때마다</small></h3>
+    <div class="svg-chart" id="curve-${key}" role="img" aria-label="${SCALP_NAMES[key]} 누적 손익. 아래 거래 목록에 같은 내용이 있습니다."></div>
+    ${criteria(s, d.engine.official)}
+    <div class="two">${groupTable("파는 이유", s.reasons)}${groupTable("코인", s.coins)}</div>
+    <h3 class="mini-title">최근 거래 <small>누르면 그때 호가창까지 볼 수 있어요</small></h3>
+    <ol class="trade-list" id="trades-${key}"><li class="empty">아직 거래가 없어요</li></ol>
+    <button type="button" class="link-btn" id="more-${key}" hidden>더 보기</button>`;
+  const shortSpan = s.n > 0 && s.last_t - s.first_t < 1800;
+  CHART.line($(`curve-${key}`), {
+    series: [{ name: "누적 손익", color: "--eq", points: s.curve || [] }], empty: "첫 거래가 끝나면 그려져요",
+    xFmt: (t) => (shortSpan ? clock(t) : clock(t).slice(0, 5)), tipFmt: (t) => clock(t, true), yFmt: (v) => won(v, true), lines: [{ y: 0 }],
   });
-  flush();
-  const marks = [];
-  if (S.start >= m.d[0].t) marks.push({ time: T(m.d[Math.max(0, m.startBar)].t), position: "aboveBar", color: css("--ink-3"), shape: "square", text: "시작" });
-  for (const e of m.events) {
-    const x = m.d[e.i + 1];
-    if (!x || x.t < from) continue;
-    marks.push(e.type === "buy"
-      ? { time: T(x.t), position: "belowBar", color: css("--up"), shape: "arrowUp", text: "매수" }
-      : { time: T(x.t), position: "aboveBar", color: css("--down"), shape: "arrowDown", text: "매도" });
+  $(`more-${key}`).addEventListener("click", () => loadTrades(key, true));
+  drawTrades(key);
+  if (S.tradeN[key] !== s.n) { S.tradeN[key] = s.n; loadTrades(key, false); }
+}
+async function loadTrades(key, more) {
+  const cur = S.trades[key] || [];
+  const q = new URLSearchParams({ key, limit: more ? "50" : "12", source: S.data.engine.source });
+  if (more && cur.length) q.set("before", cur[cur.length - 1].id);
+  try {
+    const { trades } = await getJSON(`/api/paper/trades?${q}`);
+    S.trades[key] = more ? cur.concat(trades) : trades.concat(cur.filter((t) => !trades.length || t.id < trades[trades.length - 1].id));
+    drawTrades(key);
+  } catch { /* 다음 번에 다시 */ }
+}
+function drawTrades(key) {
+  const list = S.trades[key] || [], el = $(`trades-${key}`);
+  if (!el || !list.length) return;
+  el.innerHTML = list.map((t) => `
+    <li><button type="button" class="trade" data-id="${t.id}">
+      <span class="when">${clock(t.entry_t, true)}</span>
+      <span class="what"><b>${t.coin}</b> ${esc(t.reason)} · ${(t.exit_t - t.entry_t).toFixed(1)}초</span>
+      <span class="net" data-dir="${dirOf(t.net_pct)}">${pct(t.net_pct, 3)} <small>${won(t.net_krw, true)}</small></span>
+    </button></li>`).join("");
+  el.querySelectorAll(".trade").forEach((b) => b.addEventListener("click", () => openAudit(b.dataset.id)));
+  $(`more-${key}`).hidden = list.length >= (S.data.scalp[key].n || 0);
+}
+
+/* ── 감사 기록 (거래 하나를 원자료와 대조) ── */
+function bookTable(book, title) {
+  if (!book) return "";
+  const rows = [...book.asks].reverse().map((a) => `<tr class="ask"><td>${num(a[0], 4)}</td><td>${num(a[0] * a[1])}원</td></tr>`)
+    .concat(book.bids.map((b) => `<tr class="bid"><td>${num(b[0], 4)}</td><td>${num(b[0] * b[1])}원</td></tr>`)).join("");
+  return `<div><h3 class="mini-title">${title}</h3><table class="cost book-snap"><thead><tr><th scope="col">가격</th><th scope="col">잔량(금액)</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+async function openAudit(id) {
+  const dlg = $("audit");
+  $("audit-body").innerHTML = `<p class="empty">불러오는 중…</p>`;
+  dlg.showModal();
+  try {
+    const t = await getJSON(`/api/paper/trade?id=${id}`), x = t.detail;
+    const fee = t.amount * 0.0005 * 2 + (t.gross_pct * t.amount) * 0.0005;
+    const steps = [
+      [clock(t.signal_t, true), "신호", `해외가 3초에 ${pct(t.move, 3)} 올랐고 업비트는 ${(t.lag * 100).toFixed(3)}%p 뒤처져 있었어요. 그때 호가 차이 ${pct(x.spread_signal, 3, false)}.`],
+      [clock(t.entry_t, true), "샀어요", `신호 ${(x.latency_in * 1000).toFixed(0)}ms 뒤에 새로 받은 호가창에서 ${won(t.amount)}어치를 평균 ${num(t.entry_price, 4)}원에 (호가 ${x.entry_levels}칸 사용, 가운데 값보다 ${pct(t.entry_price / x.entry_mid - 1, 3)}).`],
+      [clock(t.exit_t, true), `팔았어요 — ${esc(t.reason)}`, `조건을 본 ${(x.latency_out * 1000).toFixed(0)}ms 뒤 호가창에서 평균 ${num(t.exit_price, 4)}원에 (가운데 값보다 ${pct(t.exit_price / x.exit_mid - 1, 3)}).`],
+    ];
+    $("audit-title").textContent = `${SCALP_NAMES[t.key]} · ${t.coin} · 기록 ${t.id}번`;
+    $("audit-body").innerHTML = `
+      <ol class="timeline">${steps.map(([w, h, b]) => `<li class="tl"><span class="when">${w}</span><span class="what"><b>${h}</b><br>${b}</span></li>`).join("")}</ol>
+      <div class="tiles">
+        <div class="tile"><span class="tile-label">비용 빼기 전</span><b data-dir="${dirOf(t.gross_pct)}">${pct(t.gross_pct, 3)}</b><small>호가 체결만 반영</small></div>
+        <div class="tile"><span class="tile-label">업비트 수수료</span><b>${won(-fee)}</b><small>0.05% × 2</small></div>
+        <div class="tile"><span class="tile-label">남은 것</span><b data-dir="${dirOf(t.net_krw)}">${won(t.net_krw, true)}</b><small>${pct(t.net_pct, 3)}</small></div>
+        <div class="tile"><span class="tile-label">코인원이었다면</span><b data-dir="${dirOf(t.alt_net_pct)}">${pct(t.alt_net_pct, 3)}</b><small>수수료 0% 가정</small></div>
+      </div>
+      <p class="fine-note">해외 가격(${esc(t.source)}): 신호 3초 전 ${num(x.g_ref, 6)} → 신호 때 ${num(x.g_signal, 6)}. 신호 3초 전 업비트 파는 값 ${num(x.u_ref, 4)}원.</p>
+      <div class="two">${bookTable(x.signal_book, "신호 때 호가창")}${bookTable(x.entry_book, "살 때 호가창")}${bookTable(x.exit_book, "팔 때 호가창")}</div>`;
+  } catch (e) {
+    $("audit-body").innerHTML = `<p class="empty">기록을 읽지 못했어요: ${esc(e.message)}</p>`;
   }
-  marks.sort((a, b) => a.time - b.time);
-  if (marks.length > 14) marks.forEach((mk) => { if (mk.text !== "시작") mk.text = ""; }); // 많으면 글자 생략
-  S.series.candles.setMarkers(marks);
 }
 
-/* ── 실시간 가격 ── */
-function setStatus(kind, text) { $("status").dataset.state = kind; $("status-text").textContent = text; }
-function connect() {
-  if (S.ws) { S.ws.onclose = null; S.ws.close(); }
-  const ws = new WebSocket(NET.wsUrl());
-  ws.binaryType = "arraybuffer";
-  S.ws = ws;
-  const dec = new TextDecoder();
-  ws.onopen = () => { S.retry = 0; ws.send(JSON.stringify([{ ticket: `paper-${Math.random().toString(36).slice(2)}` }, { type: "ticker", codes: [S.cfg.market] }])); };
-  ws.onmessage = (ev) => {
-    let m;
-    try { m = JSON.parse(typeof ev.data === "string" ? ev.data : dec.decode(ev.data)); } catch { return; }
-    if (!m || m.type !== "ticker" || m.code !== S.cfg.market) return;
-    S.price = m.trade_price; S.lastMsg = Date.now();
-    render();
-  };
-  ws.onclose = () => {
-    let left = Math.min(15, 2 ** S.retry++);
-    setStatus("error", `연결 끊김 · ${left}초 뒤 다시 연결`);
-    const tick = () => { left -= 1; if (left <= 0) return connect(); setStatus("error", `연결 끊김 · ${left}초 뒤 다시 연결`); setTimeout(tick, 1000); };
-    setTimeout(tick, 1000);
-  };
+/* ── 느린 전략 ── */
+function holdingsLine(it) {
+  if (!it.holdings.length) return `<span class="chip">현금 100%</span>`;
+  const cash = it.cash / it.value;
+  return it.holdings.map((h) => `<span class="chip chip-hold">${esc(h.name)} ${pct(h.weight, 0, false)}</span>`).join(" ")
+    + (cash > 0.005 ? ` <span class="chip">현금 ${pct(cash, 0, false)}</span>` : "");
+}
+function explain13(x) {
+  if (!x) return `<p class="empty">아직 판단한 날이 없어요</p>`;
+  if (!x.complete) return `<p class="fine-note">${x.date} 자료가 비어 있어 그날은 그대로 뒀어요.</p>`;
+  const f = `${(x.funding * 100).toFixed(4)}%`, k = pct(x.kimchi, 2);
+  const rows = x.holding
+    ? [["펀딩비가 과열이 아님", `최근 9회 평균 ${f} · 0.06%를 넘으면 팝니다`, !x.sell.funding],
+      ["김치 프리미엄이 과열이 아님", `${k} · 석 달 중 상위 5% 선 ${pct(x.k_sell, 2)}을 넘으면 팝니다`, !x.sell.kimchi],
+      ["20일 평균 근처 위", `종가 ${num(x.close)}원 · 평균의 98.5%인 ${num(x.ma * 0.985)}원 아래면 팝니다`, !x.sell.trend]]
+    : [["펀딩비가 식어 있음", `최근 9회 평균 ${f} · 0.03% 이하여야 삽니다`, x.buy.funding],
+      ["김치 프리미엄이 높지 않음", `${k} · 석 달 중 상위 20% 선 ${pct(x.k_buy, 2)} 이하여야 삽니다`, x.buy.kimchi],
+      ["20일 평균 위", `종가 ${num(x.close)}원 · 20일 평균 ${num(x.ma)}원`, x.buy.trend]];
+  return `<p class="fine-note">${x.date} 캔들 마감 기준 · ${x.holding ? "들고 있어요. 아래 중 하나라도 깨지면 팝니다" : "쉬는 중이에요. 아래 셋이 다 맞아야 삽니다"}</p>
+    <ul class="check-list crit">${rows.map(([t, v, ok]) => `<li class="check ${ok ? "ok" : "no"}">${icon(ok ? "ok" : "no")}<div><p class="check-title">${t}</p><p class="check-detail">${v}</p></div></li>`).join("")}</ul>`;
+}
+function explain14(x) {
+  if (!x || !x.rows.length) return `<p class="empty">자료가 모자라요</p>`;
+  return `<p class="fine-note">${x.as_of} 마감 기준 점수 (실제 판단은 일요일 캔들이 끝난 월요일 아침)</p>
+    <div class="table-scroll"><table class="cost tbl-s"><thead><tr><th scope="col">코인</th><th scope="col">21일 수익률</th><th scope="col">점수</th><th scope="col">지금 계산하면</th></tr></thead><tbody>${
+    x.rows.map((r) => `<tr><th scope="row">${r.ticker.replace("KRW-", "")}</th><td data-dir="${dirOf(r.ret)}">${pct(r.ret, 1)}</td><td>${r.score.toFixed(1)}</td><td>${r.pick ? "<b>담음</b>" : r.ret > 0 ? "순위 밖" : "내리는 중"}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function explain12(x) {
+  if (!x || !x.rows) return `<p class="empty">120거래일치 자료가 모자란 자산이 있어 전부 단기채권에 둡니다</p>`;
+  return `<p class="fine-note">${x.as_of} 마감 기준 (실제 판단은 주 마지막 거래일)</p>
+    <div class="table-scroll"><table class="cost tbl-s"><thead><tr><th scope="col">자산</th><th scope="col">하루 흔들림</th><th scope="col">기본 비중</th><th scope="col">120일 평균 대비</th><th scope="col">지금 계산하면</th></tr></thead><tbody>${
+    x.rows.map((r) => `<tr><th scope="row">${esc(r.name)}</th><td>${pct(r.vol, 2, false)}</td><td>${pct(r.base, 0, false)}</td><td data-dir="${dirOf(r.close / r.ma - 1)}">${pct(r.close / r.ma - 1, 1)}</td><td>${r.hold ? "담음" : "<b>단기채권으로</b>"}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function renderSlowCard(d, key) {
+  const box = document.querySelector(`.slow-card[data-key="${key}"]`);
+  const items = (d.slow && d.slow.items) || {}, it = items[key];
+  if (!changed(`slow-${key}`, [it, d.slow && d.slow.next])) return;
+  const title = (it && it.name) || { s12: "#12 흔들림 맞춰 나눠 담기 + 주식 방어", s13: "#13 펀딩비·김치 프리미엄", s14: "#14 코인 4개 주간 갈아타기" }[key];
+  const head = (chip) => `<div class="card-head"><h2 class="card-title">${esc(title)}</h2>${chip}</div><p class="card-sub">${SLOW_INFO[key].desc}</p>`;
+  if (!it) { box.innerHTML = `${head("")}<p class="empty">엔진이 한 번 계산하면 보여요 (켠 뒤 1분쯤)</p>`; return; }
+  if (it.error) {
+    const why = key === "s13" && it.error.includes("451") ? "이 컴퓨터에서는 바이낸스 선물(펀딩비)에 연결할 수 없어요. 한국에서 켠 컴퓨터에서는 계산됩니다." : it.error;
+    box.innerHTML = `${head('<span class="chip chip-warn">자료 없음</span>')}<p class="warn-line">${esc(why)}</p>`;
+    return;
+  }
+  const ctl = items[it.control], until = d.slow.next[key];
+  const tiles = [
+    ["계좌 가치", won(it.value), `<span class="pnl-inline" data-dir="${dirOf(it.ret)}">${pct(it.ret)}</span>`],
+    ["가장 크게 떨어졌을 때", pct(it.max_drawdown, 1), "시작 이후"],
+    [ctl && !ctl.error ? ctl.name : "비교 기준", ctl && !ctl.error ? `<span data-dir="${dirOf(ctl.ret)}">${pct(ctl.ret)}</span>` : "—", "같은 기간"],
+  ];
+  const explain = { s13: explain13, s14: explain14, s12: explain12 }[key](it.explain);
+  const trades = it.trades.slice(-8).reverse();
+  box.innerHTML = `${head(`<span class="chip">${it.trades.length ? "진행 중" : `${it.start} 시작`}</span>`)}
+    <div class="tiles">${tiles.map(([l, v, sub]) => `<div class="tile"><span class="tile-label">${esc(l)}</span><b>${v}</b><small>${sub}</small></div>`).join("")}</div>
+    <div class="countdown">${icon("clock")}<span>다음 판단까지 <b data-until="${until}">—</b></span><span class="muted">${clock(until, true).slice(0, -3)}${key === "s12" ? " 무렵 (휴장이면 그 전 거래일)" : ""}</span></div>
+    <h3 class="mini-title">지금 보유</h3><p class="chips">${holdingsLine(it)}</p>
+    <h3 class="mini-title">판단 근거</h3>${explain}
+    <h3 class="mini-title">거래 기록 <small>비용 합계 ${won(it.total_cost)}</small></h3>
+    ${trades.length ? `<ol class="timeline short">${trades.map((t) => `<li class="tl ${t.side === "buy" ? "buy" : "sell"}"><span class="when">${t.date} 아침</span><span class="what">${esc(t.name)} ${t.side === "buy" ? "삼" : "팖"} · ${won(t.amount)} · ${num(t.price, t.price >= 100 ? 0 : 2)}원에</span></li>`).join("")}</ol>`
+    : `<p class="empty">아직 체결된 거래가 없어요</p>`}`;
+  tick();
+}
+function renderEquity(d) {
+  const items = (d.slow && d.slow.items) || {};
+  const series = Object.values(items).filter((it) => !it.error && it.curve && it.curve.length > 1 && it.trades.length)
+    .map((it) => ({ name: it.name, color: SLOW_INFO[it.key].color, dash: SLOW_INFO[it.key].dash,
+      points: it.curve.map(([date, v]) => [Date.parse(`${date}T00:00:00Z`) / 1000, v]) }));
+  if (!changed("equity", series)) return;
+  $("eq-keys").innerHTML = series.map((s) => `<li><span class="key key-line${s.dash ? " key-dash" : ""}" style="${s.dash ? "" : `background:var(${s.color})`}"></span>${esc(s.name)}</li>`).join("");
+  const day = (t) => { const x = new Date(t * 1000); return `${x.getUTCMonth() + 1}/${x.getUTCDate()}`; };
+  CHART.line($("eq-chart"), { series, xFmt: day, yFmt: (v) => `${num(v / 10000)}만`, lines: [{ y: 10000000, label: "시작 1,000만 원" }],
+    empty: "첫 체결이 일어난 뒤부터 그려져요 (코인 전략은 11월 16일 아침, ETF는 그다음 주)" });
+  $("eq-note").textContent = series.length ? "하루에 한 점(그날 마지막 가격 기준). 색 선은 전략, 회색 선은 비교 기준입니다." : "";
 }
 
-/* 1초마다: 카운트다운, 캔들 마감 뒤 다시 계산 */
-let nextClose = 0, refreshing = false;
-setInterval(async () => {
+/* ── 호가 비용 ── */
+function renderCosts(d) {
+  if (!changed("costs", d.costs)) return;
+  if (!d.costs.length) return;
+  const by = {};
+  for (const c of d.costs) (by[c.coin] ||= {})[c.exchange] = c;
+  const cell = (v) => `<td class="${v != null && v > 0.002 ? "over" : ""}">${v == null ? "잔량 부족" : pct(v, 3, false)}</td>`;
+  const side = (c) => (c ? `${cell(c.spread)}${cell(c.rt1)}${cell(c.rt5)}${cell(c.rt10)}` : "<td>—</td>".repeat(4));
+  $("cost-table").innerHTML = `<table class="cost"><thead>
+    <tr><th rowspan="2" scope="col">코인</th><th colspan="4" scope="colgroup">업비트</th><th colspan="4" scope="colgroup">코인원</th></tr>
+    <tr>${"<th scope=\"col\">호가 차이</th><th scope=\"col\">100만 원</th><th scope=\"col\">500만 원</th><th scope=\"col\">1,000만 원</th>".repeat(2)}</tr></thead><tbody>${
+    Object.keys(by).sort().map((coin) => `<tr><th scope="row">${coin}</th>${side(by[coin].upbit)}${side(by[coin].coinone)}</tr>`).join("")}</tbody></table>
+    <p class="fine-note">${num(Math.max(...d.costs.map((c) => c.n)))}번 잰 값의 가운데 값. 가정(0.20%)보다 큰 칸은 표시했어요. 업비트 수수료(왕복 0.10%)는 여기에 더해집니다.</p>`;
+}
+
+/* ── 돌리기 ── */
+function tick() {
   const now = Date.now() / 1000;
-  nextClose = (Math.floor(now / BAR) + 1) * BAR;
-  const left = Math.max(0, Math.floor(nextClose - now));
-  const p = (n) => String(n).padStart(2, "0");
-  $("countdown").textContent = `${Math.floor(left / 3600)}:${p(Math.floor((left % 3600) / 60))}:${p(left % 60)}`;
-  $("next-close").textContent = `(${kst(nextClose)})`;
-  if (S.ws && S.ws.readyState === 1 && S.lastMsg) {
-    const s = (Date.now() - S.lastMsg) / 1000;
-    setStatus(s < 30 ? "live" : "connecting", `실시간 · ${s < 1 ? "방금" : `${Math.floor(s)}초 전`} 갱신`);
+  document.querySelectorAll("[data-until]").forEach((el) => { el.textContent = span(+el.dataset.until - now); });
+}
+function render(d) {
+  S.data = d;
+  renderEngine(d); renderRank(d); renderLive(d); renderRadar(d);
+  renderScalp(d, "s18"); renderScalp(d, "s17");
+  renderEquity(d); ["s13", "s14", "s12"].forEach((k) => renderSlowCard(d, k));
+  renderCosts(d);
+}
+async function poll() {
+  try {
+    render(await getJSON("/api/paper/summary"));
+    S.failed = 0;
+  } catch (e) {
+    S.failed += 1;
+    if (S.failed >= 2) { $("status").dataset.state = "closed"; $("status-text").textContent = "연결 끊김"; }
   }
-  // 캔들이 끝나고 90초 뒤 최신 캔들 다시 받기 (거래소 집계 여유)
-  if (S.model && !refreshing && now - (nextClose - BAR) > 90 && now - (nextClose - BAR) < 95) {
-    refreshing = true;
-    try { await refreshLatest(); S.model = compute(); drawChart(); render(); } catch { /* 다음 기회에 */ }
-    refreshing = false;
-  }
-}, 1000);
-document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState !== "visible" || !S.cfg) return;
-  if (!S.ws || S.ws.readyState > 1) connect();
-  try { await refreshLatest(); S.model = compute(); drawChart(); render(); } catch { /* 무시 */ }
-});
-
+  setTimeout(poll, document.hidden ? 10000 : 2000);
+}
 function setTheme(t) {
   document.documentElement.dataset.theme = t;
   store.set("theme", t);
   $("theme").querySelector("use").setAttribute("href", t === "dark" ? "#i-sun" : "#i-moon");
-  themeChart();
 }
-
-window.addEventListener("DOMContentLoaded", async () => {
-  const theme = store.get("theme", null) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  document.documentElement.dataset.theme = theme;
-  $("theme").querySelector("use").setAttribute("href", theme === "dark" ? "#i-sun" : "#i-moon");
+async function init() {
+  setTheme(store.get("theme", null) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   $("theme").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
-  buildChart();
-
+  $("audit-close").addEventListener("click", () => $("audit").close());
+  $("audit").addEventListener("click", (e) => { if (e.target === $("audit")) $("audit").close(); });
   await NET.detect();
-  NET.label();
-  try {
-    S.cfg = await getJSON("paper_config.json");
-  } catch (e) {
-    $("state-line").textContent = `설정을 불러오지 못했습니다 (${e.message}).`;
+  if (NET.mode !== "server") {
+    const note = $("offline-note");
+    note.hidden = false;
+    note.textContent = "모의 투자 기록은 엔진을 켜 둔 컴퓨터에서 열어야 보여요 (코인시세.bat). 이 공개 주소에는 기록을 올리지 않습니다.";
+    $("main").hidden = true;
+    document.querySelector(".jump").hidden = true;
+    $("status").dataset.state = "closed"; $("status-text").textContent = "기록 없음";
     return;
   }
-  const q = new URLSearchParams(location.search).get("start");
-  const qs = q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? Date.parse(`${q}T00:00:00Z`) / 1000 : NaN;
-  S.official = !isFinite(qs);
-  S.start = S.official ? Date.parse(S.cfg.start) / 1000 : Math.max(qs, Date.parse("2025-01-01T00:00:00Z") / 1000);
-  $("start-text").textContent = kst(S.start, true);
-  $("cost-text").textContent = `${(S.cfg.side_cost * 100).toFixed(2)}%`;
-  $("xp-date").max = new Date().toISOString().slice(0, 10);
-  $("xp-date").value = new Date(S.start * 1000).toISOString().slice(0, 10);
-  $("xp-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const v = $("xp-date").value;
-    if (v) location.search = `?start=${v}`;
-  });
-  if (!S.official) {
-    const n = $("explore-note");
-    n.hidden = false;
-    n.textContent = `미리보기: ${kst(S.start, true)}에 시작했다고 가정한 결과입니다. 공식 모의 투자 기록이 아닙니다.`;
-  }
-
-  connect();
-  try {
-    await loadHistory(S.start - 210 * 86400, (p, n) => { $("state-line").textContent = `과거 시세 불러오는 중… (${p}/${n})`; });
-  } catch (e) {
-    $("state-line").textContent = `시세를 불러오지 못했습니다 (${e.message}). 잠시 뒤 새로고침해 주세요.`;
-    return;
-  }
-  S.model = compute();
-  drawChart();
-  S.chart.timeScale().setVisibleRange({ from: S.start - 20 * 86400 + KST, to: Date.now() / 1000 + KST + BAR });
-  render();
-  window.__paper = S; // 확인용
-});
+  setInterval(tick, 1000);
+  poll();
+}
+init();
