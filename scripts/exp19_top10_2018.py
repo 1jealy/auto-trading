@@ -92,6 +92,16 @@ def iota() -> tuple[pd.DataFrame, list[str]]:
     idx = a.index.intersection(b.index)
     out = pd.DataFrame({"Open": a.loc[idx, "Open"] * b.loc[idx, "Open"],
                         "Close": a.loc[idx, "Close"] * b.loc[idx, "Close"]}).loc[DATA_START:DATA_END]
+    # IOTABTC 거래쌍이 2026-05-22 에 끝남 → 그다음 날부터는 같은 바이낸스의 IOTAUSDT 로 이어 붙인다 (검증 실행 전에 정함)
+    last = out.index[-1]
+    tail_months = pd.period_range(last.strftime("%Y-%m"), DATA_END[:7], freq="M").strftime("%Y-%m")
+    tail = [df for m in tail_months if (df := binance_month("IOTAUSDT", m)) is not None]
+    if tail:
+        t = pd.concat(tail).sort_index()
+        t = t[~t.index.duplicated()].loc[last + pd.Timedelta(days=1):DATA_END]
+        if len(t):
+            print(f"  IOTA: {t.index[0].date()} 부터 IOTAUSDT 로 이어 붙임 ({len(t)}일)")
+            out = pd.concat([out, t])
     return out, missing
 
 
