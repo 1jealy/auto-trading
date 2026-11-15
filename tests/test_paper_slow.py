@@ -209,3 +209,56 @@ def test_next_times_are_utc_midnight_monday_and_friday_close():
     assert datetime.fromtimestamp(nt["s13"], timezone.utc) == datetime(2026, 11, 16, tzinfo=timezone.utc)
     assert datetime.fromtimestamp(nt["s14"], timezone.utc) == datetime(2026, 11, 16, tzinfo=timezone.utc)
     assert datetime.fromtimestamp(nt["s12"], timezone.utc) == datetime(2026, 11, 20, 6, 30, tzinfo=timezone.utc)
+
+
+# ── 시작 전 고친 것 (2026-11-15) ──
+def test_fx_uses_only_the_previous_days_close():
+    fx = pd.Series({pd.Timestamp("2026-11-12"): 1400.0, pd.Timestamp("2026-11-13"): 1410.0,
+                    pd.Timestamp("2026-11-16"): 1420.0})  # 13일(금) 다음은 16일(월)
+    dates = pd.date_range("2026-11-13", "2026-11-17")
+    got = slow.previous_close(fx, dates)
+    # 13일 결정에는 12일 값, 주말·월요일에는 금요일(13일) 값, 화요일에는 월요일 값
+    assert got.tolist() == [1400.0, 1410.0, 1410.0, 1410.0, 1420.0]
+
+
+def test_etf_strategy_and_controls_start_on_the_same_decision_day():
+    for key in ("s12", "c_etf4", "c_etf5", "c_kodex"):
+        assert slow.SPECS[key].start == pd.Timestamp("2026-11-20")
+    assert slow.SPECS["s12"].controls == ("c_etf4", "c_etf5")
+    assert set(slow.ETF5) - set(slow.ETF4) == {"411060"}
+
+
+def test_decisions_and_freeze_flag_changed_days(tmp_path):
+    from autotrade.paper.store import Store
+
+    idx = pd.date_range("2026-11-10", periods=5)  # 11-14 까지
+    close = pd.DataFrame({slow.BTC: np.linspace(100, 104, 5)}, index=idx)
+    res = slow.replay("c_btc", Prices(close.copy(), close))
+    dec = slow.decisions("c_btc", res)
+    assert list(dec) == []  # 시작일(11-15) 전 자료뿐 → 결정 없음
+    idx = pd.date_range("2026-11-13", periods=6)
+    close = pd.DataFrame({slow.BTC: np.linspace(100, 105, 6)}, index=idx)
+    dec = slow.decisions("c_btc", slow.replay("c_btc", Prices(close.copy(), close)))
+    assert dec["2026-11-15"] == {slow.BTC: 1.0}
+
+    store = Store(tmp_path / "p.db")
+    first = store.freeze_decisions("c_btc", dec, t=1.0)
+    assert first == {"n": len(dec), "changed": []}
+    later = dict(dec, **{"2026-11-15": {}})  # 나중에 다시 계산했더니 그날 결정이 바뀜
+    again = store.freeze_decisions("c_btc", later, t=2.0)
+    assert again["changed"] == ["2026-11-15"] and again["n"] == len(dec)
+
+
+def test_funding_is_accumulated_in_store(tmp_path):
+    from autotrade.paper.feeds import parse_okx_funding
+    from autotrade.paper.store import Store
+
+    rows = [{"fundingTime": str(1_794_729_600_000 - i * 8 * 3600_000), "fundingRate": "0.0001"} for i in range(3)]
+    s = parse_okx_funding(rows)
+    assert s.index.is_monotonic_increasing and len(s) == 3
+    store = Store(tmp_path / "p.db")
+    store.add_funding(s, "okx_swap")
+    store.add_funding(parse_okx_funding(rows[:1] + [{"fundingTime": str(1_794_729_600_000 + 8 * 3600_000),
+                                                      "fundingRate": "0.0002"}]), "okx_swap")
+    got = store.funding("okx_swap")
+    assert len(got) == 4 and got.iloc[-1] == pytest.approx(0.0002)

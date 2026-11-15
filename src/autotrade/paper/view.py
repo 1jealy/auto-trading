@@ -10,9 +10,9 @@ from autotrade.paper.store import LIVE_PATH, OFFICIAL_SOURCE, SLOW_PATH, Store, 
 
 RULES = {
     "s17": {"move": FORMAL.move, "lag": FORMAL.lag, "amount": FORMAL.amount, "max_hold": FORMAL.max_hold,
-            "take": FORMAL.take, "stop": FORMAL.stop, "fee": FORMAL.fee, "min_trades": 100},
-    "s18": {"move": ALWAYS.move, "lag": ALWAYS.lag, "amount": ALWAYS.amount, "max_hold": ALWAYS.max_hold,
-            "fee": ALWAYS.fee, "min_trades": 300},
+            "take": FORMAL.take, "stop": FORMAL.stop, "fee": FORMAL.fee, "min_events": 100},
+    "s18": {"move": ALWAYS.move, "cost_gap": ALWAYS.cost_gap, "amount": ALWAYS.amount, "max_hold": ALWAYS.max_hold,
+            "fee": ALWAYS.fee, "min_events": 200},
 }
 
 

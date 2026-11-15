@@ -37,7 +37,7 @@ class FakeFeeds:
         return 1.005 ** max(steps, 0)
 
     def pick_source(self):
-        self.source = "binance_futures"
+        self.source = "okx_swap"
         return self.source
 
     def global_mids(self):
@@ -59,7 +59,7 @@ def paper_dir(tmp_path, monkeypatch):
         for name in ("LIVE_PATH", "SLOW_PATH"):
             if hasattr(mod, name):
                 monkeypatch.setattr(mod, name, tmp_path / getattr(store_mod, name).name)
-    monkeypatch.setattr(run_mod, "compute_slow", lambda feeds: {"updated": time.time(), "items": {}, "next": {}})
+    monkeypatch.setattr(run_mod, "compute_slow", lambda feeds, store=None: {"updated": time.time(), "items": {}, "next": {}})
     monkeypatch.setattr(run_mod, "Feeds", lambda coins=None: None)
     monkeypatch.setattr(run_mod, "UPBIT_GAP", 0.0)
     return tmp_path
@@ -86,8 +86,8 @@ def test_engine_records_trades_radar_costs_and_summary(paper_dir, monkeypatch):
     engine.stop.set()
     th.join(5)
 
-    s18 = store.scalp_summary("s18", "binance_futures")
-    s17 = store.scalp_summary("s17", "binance_futures")
+    s18 = store.scalp_summary("s18", "okx_swap")
+    s17 = store.scalp_summary("s17", "okx_swap")
     assert s18["n"] >= 2 and s17["n"] >= 1
     assert s18["value"] == pytest.approx(10_000_000 + s18["net_krw"])
     one = store.trade(store.trades("s18", limit=1)[0]["id"])
@@ -97,12 +97,12 @@ def test_engine_records_trades_radar_costs_and_summary(paper_dir, monkeypatch):
     # 수수료만큼은 반드시 잃는다: 순수익 = 총수익 − 약 0.1%
     assert one["net_pct"] == pytest.approx(one["gross_pct"] - 0.0005 * (2 + one["gross_pct"]), abs=1e-9)
 
-    radar = store.radar_summary("binance_futures")
+    radar = store.radar_summary("okx_swap")
     assert radar["n"] >= 1 and radar["curve"][0]["offset"] == 0.0
     assert store.cost_summary() and store.uptime()["seconds"] > 3
     summary = view_mod.build_summary(store)
     assert summary["scalp"]["s18"]["n"] == s18["n"] and summary["engine"]["official"]
-    assert summary["engine"]["source_name"] == "바이낸스 선물"
+    assert summary["engine"]["source_name"] == "OKX 선물"
 
     # 다시 켜면 남은 돈을 기록에서 되살린다
     assert store.realized("s18") == pytest.approx(s18["net_krw"])
@@ -110,7 +110,7 @@ def test_engine_records_trades_radar_costs_and_summary(paper_dir, monkeypatch):
 
 def test_second_engine_is_refused_while_one_is_running(paper_dir):
     store = Store(paper_dir / "paper.db")
-    store.heartbeat(time.time(), "binance_futures")
+    store.heartbeat(time.time(), "okx_swap")
     with pytest.raises(RuntimeError):
         Engine(store=store, feeds=FakeFeeds())
     Engine(store=store, feeds=FakeFeeds(), force=True)

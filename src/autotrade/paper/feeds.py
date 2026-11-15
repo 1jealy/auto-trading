@@ -1,7 +1,8 @@
 """공개 시세 받기 (키 필요 없음, 읽기 전용).
 
-해외 가격 출처는 바이낸스 USDT 선물이 기준이다. 연결이 막힌 곳(예: 미국 클라우드)에서는 OKX 선물, 그다음 바이낸스 현물로
-대신하고, 어떤 출처를 썼는지 기록에 남긴다(정식 판정에는 바이낸스 선물 기록만 쓴다).
+해외 가격 출처는 OKX USDT 무기한 선물이 기준이다(2026-11-15 시작 전 변경: 바이낸스 선물은 미국·일본 등에서 막힐 수 있어서).
+OKX 에 연결되지 않으면 바이낸스 선물, 그다음 바이낸스 현물로 대신하고, 어떤 출처를 썼는지 기록에 남긴다
+(정식 판정에는 OKX 선물 기록만 쓴다). #13 펀딩비도 OKX 기록을 쓴다.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pandas as pd
 from autotrade.paper.book import Book
 
 COINS = ("BTC", "ETH", "XRP", "SOL")
-SOURCES = ("binance_futures", "okx_swap", "binance_spot")
+SOURCES = ("okx_swap", "binance_futures", "binance_spot")
 SOURCE_NAMES = {"binance_futures": "바이낸스 선물", "okx_swap": "OKX 선물", "binance_spot": "바이낸스 현물"}
 UA = {"User-Agent": "Mozilla/5.0 (paper-trading research; public market data only)"}
 
@@ -106,10 +107,26 @@ class Feeds:
         return {c: b for c, b in self.pool.map(one, list(coins)) if b is not None}
 
     # ── 하루 단위 자료 (#13) ──
-    def funding(self, symbol: str = "BTCUSDT") -> pd.Series:
-        """바이낸스 선물 펀딩비 최근 1,000회. index = 확정 시각(UTC), 값 = 비율."""
-        rows = self._get("https://fapi.binance.com/fapi/v1/fundingRate", {"symbol": symbol, "limit": 1000}, timeout=15)
-        return parse_funding(rows)
+    def funding(self, inst: str = "BTC-USDT-SWAP", pages: int = 3) -> pd.Series:
+        """OKX 선물 펀딩비(확정된 것) 최근 pages×100회. index = 확정 시각(UTC), 값 = 비율.
+
+        OKX 는 최근 약 3개월치만 주므로 엔진이 받은 값을 저장소에 쌓아 둔다(Store.add_funding).
+        """
+        rows: list[dict] = []
+        after = None
+        for _ in range(pages):
+            params = {"instId": inst, "limit": 100}
+            if after:
+                params["after"] = after
+            d = self._get("https://www.okx.com/api/v5/public/funding-rate-history", params, timeout=15)
+            page = d.get("data") or []
+            if not page:
+                break
+            rows += page
+            after = min(int(r["fundingTime"]) for r in page)
+        if not rows:
+            raise FeedError("OKX 펀딩비를 받지 못함")
+        return parse_okx_funding(rows)
 
     def usdt_daily(self, symbol: str = "BTCUSDT", days: int = 400) -> pd.Series:
         """바이낸스 현물 일봉 종가. index = 그날(UTC) 날짜."""
@@ -132,6 +149,11 @@ class Feeds:
 def parse_funding(rows: list[dict]) -> pd.Series:
     s = pd.Series({pd.Timestamp(int(r["fundingTime"]), unit="ms"): float(r["fundingRate"]) for r in rows}, dtype=float)
     return s.sort_index()
+
+
+def parse_okx_funding(rows: list[dict]) -> pd.Series:
+    s = pd.Series({pd.Timestamp(int(r["fundingTime"]), unit="ms"): float(r["fundingRate"]) for r in rows}, dtype=float)
+    return s[~s.index.duplicated(keep="last")].sort_index()
 
 
 def parse_klines(rows: list[list]) -> pd.Series:

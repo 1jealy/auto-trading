@@ -1,4 +1,4 @@
-"""단타(#17 정식, #18 계속 거래)와 지연 관측의 판단 로직. 규칙은 docs/experiments.md 에 등록한 그대로.
+"""단타(#17 정식, #18 비용을 넘는 틈만 자주)와 지연 관측의 판단 로직. 규칙은 docs/experiments.md 에 등록한 그대로.
 
 네트워크를 쓰지 않는다. 실행 루프(run.py)가 시세를 받아 아래 두 함수로 넘겨 준다.
 - on_tick(t, coin, g, book): 약 0.5초마다. t 는 **요청을 보내기 시작한 시각** — 호가창은 t 이후의 상태다.
@@ -30,6 +30,8 @@ class ScalpParams:
     stop: float | None = None
     origin_stop: bool = False  # 해외 가격이 신호 3초 전 값 이하로 돌아오면
     catchup: bool = False  # 업비트 매수 1호가가 해외 변화만큼 따라오면
+    cost_gap: float | None = None  # 뒤처짐 ≥ 그 순간 업비트 호가 차이 + 수수료 왕복 + 이 여유일 때만 (#18)
+    refill: bool = False  # 남은 돈이 한 번 살 돈보다 적으면 처음 금액으로 다시 채우고 기록 (#18)
     fee: float = 0.0005  # 업비트 수수료(한쪽)
     latency: float = 0.2
     capital: float = 10_000_000
@@ -37,7 +39,8 @@ class ScalpParams:
 
 FORMAL = ScalpParams("s17", move=0.0035, lag=0.0020, amount=5_000_000, max_hold=60.0, need_tight_spread=True,
                      min_depth3=5_000_000, take=0.0025, stop=0.0030, origin_stop=True, catchup=True)
-ALWAYS = ScalpParams("s18", move=0.0010, lag=0.0005, amount=1_000_000, max_hold=20.0)
+ALWAYS = ScalpParams("s18", move=0.0015, lag=0.0, amount=1_000_000, max_hold=30.0, origin_stop=True, catchup=True,
+                     cost_gap=0.0005, refill=True)
 
 
 @dataclass
@@ -71,7 +74,7 @@ class Position:
 
 
 class Scalper:
-    def __init__(self, params=(FORMAL, ALWAYS), source: str = "binance_futures", cash: dict | None = None,
+    def __init__(self, params=(FORMAL, ALWAYS), source: str = "okx_swap", cash: dict | None = None,
                  lookback: float = 3.0, max_age: float = 4.5, radar_move: float = 0.0015,
                  radar_cooldown: float = 5.0) -> None:
         self.params = {p.key: p for p in params}
@@ -132,12 +135,14 @@ class Scalper:
                 continue
             if move < p.move or lag < p.lag:
                 continue
+            if p.cost_gap is not None and lag < book.spread + 2 * p.fee + p.cost_gap:
+                continue
             why = None
             if p.need_tight_spread and not (book.spread <= p.max_spread or book.one_tick_spread()):
                 why = "호가 차이가 넓음"
             elif p.min_depth3 and book.depth_krw("ask", 3) < p.min_depth3:
                 why = "매도 1~3호가 잔량 부족"
-            elif self.cash[p.key] < p.amount * (1 + p.fee):
+            elif self.cash[p.key] < p.amount * (1 + p.fee) and not p.refill:
                 why = "남은 돈 부족"
             if why:
                 self._skip(t, p.key, coin, why, move, lag)
@@ -216,7 +221,10 @@ class Scalper:
         if not buy.complete:
             return self._skip(t, p.key, e["coin"], "체결 시점 호가 잔량 부족", e["move"], e["lag"])
         if self.cash[p.key] < p.amount * (1 + p.fee):
-            return self._skip(t, p.key, e["coin"], "남은 돈 부족", e["move"], e["lag"])
+            if not p.refill:
+                return self._skip(t, p.key, e["coin"], "남은 돈 부족", e["move"], e["lag"])
+            self.cash[p.key] += p.capital
+            self.out.append({"type": "refill", "key": p.key, "t": t, "amount": p.capital, "source": self.source})
         self.cash[p.key] -= p.amount * (1 + p.fee)
         pos = Position(p.key, e["coin"], e["signal_t"], t, buy.price, buy.qty, p.amount, e["g_ref"], e["u_ref"],
                        e["move"], e["lag"], exit_due=t + p.max_hold + p.latency)

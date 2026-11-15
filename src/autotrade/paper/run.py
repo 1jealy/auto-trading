@@ -77,16 +77,28 @@ def next_times(now: datetime | None = None) -> dict[str, float]:
     return {"s13": day.timestamp(), "s14": monday.timestamp(), "s12": friday.timestamp()}
 
 
-def compute_slow(feeds: Feeds) -> dict:
-    """느린 전략·대조군을 시작일 이후 시세로 다시 계산한다. 자료를 못 받은 것은 error 로 표시."""
+FUNDING_SOURCE = "okx_swap"
+
+
+def compute_slow(feeds: Feeds, store: Store | None = None) -> dict:
+    """느린 전략·대조군을 시작일 이후 시세로 다시 계산한다. 자료를 못 받은 것은 error 로 표시.
+
+    store 가 있으면 결정을 처음 본 값으로 저장하고(어긋나면 frozen.changed 에 표시), 받은 펀딩비를 쌓아 둔다.
+    """
     out: dict = {"updated": time.time(), "items": {}, "next": next_times()}
+
+    def finish(key: str, res, p: Prices, names=None) -> dict:
+        d = slow.summarize(key, res, p, names)
+        if store is not None:
+            d["frozen"] = store.freeze_decisions(key, slow.decisions(key, res))
+        return d
 
     def guard(key: str, fn) -> None:
         try:
             out["items"][key] = fn()
         except Exception as e:  # noqa: BLE001
             out["items"][key] = {"key": key, "name": slow.SPECS[key].name, "kind": slow.SPECS[key].kind,
-                                 "control": slow.SPECS[key].control, "error": f"{type(e).__name__}: {str(e)[:140]}"}
+                                 "controls": list(slow.SPECS[key].controls), "error": f"{type(e).__name__}: {str(e)[:140]}"}
 
     coins: Prices | None = None
     try:
@@ -101,19 +113,22 @@ def compute_slow(feeds: Feeds) -> dict:
 
     def s14() -> dict:
         p = need_coins()
-        d = slow.summarize("s14", slow.replay("s14", p), p)
+        d = finish("s14", slow.replay("s14", p), p)
         d["explain"] = {"as_of": completed(p, "coin").dates[-1].strftime("%Y-%m-%d"),
                         "rows": slow.WeeklySharpeRotation().table(completed(p, "coin"))}
         return d
 
     def c_btc() -> dict:
         p = need_coins().select([slow.BTC])
-        return slow.summarize("c_btc", slow.replay("c_btc", p), p)
+        return finish("c_btc", slow.replay("c_btc", p), p)
 
     def s13() -> dict:
-        p = slow.with_funding_kimchi(need_coins().select([slow.BTC]), feeds.funding(), feeds.usdt_daily(),
-                                     feeds.usdkrw_daily())
-        d = slow.summarize("s13", slow.replay("s13", p), p)
+        funding = feeds.funding()
+        if store is not None:
+            store.add_funding(funding, FUNDING_SOURCE)
+            funding = store.funding(FUNDING_SOURCE)
+        p = slow.with_funding_kimchi(need_coins().select([slow.BTC]), funding, feeds.usdt_daily(), feeds.usdkrw_daily())
+        d = finish("s13", slow.replay("s13", p), p)
         _, last = slow.FundingKimchi(slow.START_COIN).walk(completed(p, "coin"))
         if last:
             last["date"] = last["date"].strftime("%Y-%m-%d")
@@ -133,7 +148,7 @@ def compute_slow(feeds: Feeds) -> dict:
 
     def s12() -> dict:
         p = need_etfs()
-        d = slow.summarize("s12", slow.replay("s12", p), p, slow.ETF_NAMES)
+        d = finish("s12", slow.replay("s12", p), p, slow.ETF_NAMES)
         done = completed(p, "etf")
         rows = slow.InverseVolTrend().table(done)
         for r in rows or []:
@@ -143,13 +158,18 @@ def compute_slow(feeds: Feeds) -> dict:
 
     def c_etf4() -> dict:
         p = need_etfs().select(slow.ETF4)
-        return slow.summarize("c_etf4", slow.replay("c_etf4", p), p, slow.ETF_NAMES)
+        return finish("c_etf4", slow.replay("c_etf4", p), p, slow.ETF_NAMES)
+
+    def c_etf5() -> dict:
+        p = need_etfs().select(slow.ETF5)
+        return finish("c_etf5", slow.replay("c_etf5", p), p, slow.ETF_NAMES)
 
     def c_kodex() -> dict:
         p = need_etfs().select(["069500"])
-        return slow.summarize("c_kodex", slow.replay("c_kodex", p), p, slow.ETF_NAMES)
+        return finish("c_kodex", slow.replay("c_kodex", p), p, slow.ETF_NAMES)
 
-    for key, fn in (("s14", s14), ("c_btc", c_btc), ("s13", s13), ("s12", s12), ("c_etf4", c_etf4), ("c_kodex", c_kodex)):
+    for key, fn in (("s14", s14), ("c_btc", c_btc), ("s13", s13), ("s12", s12), ("c_etf4", c_etf4), ("c_etf5", c_etf5),
+                    ("c_kodex", c_kodex)):
         guard(key, fn)
     return out
 
@@ -174,7 +194,7 @@ class Engine:
     def slow_loop(self) -> None:
         while not self.stop.is_set():
             try:
-                write_json(SLOW_PATH, compute_slow(Feeds(self.feeds.coins)))
+                write_json(SLOW_PATH, compute_slow(Feeds(self.feeds.coins), self.store))
             except Exception:  # noqa: BLE001
                 log("느린 전략 계산 실패:\n" + traceback.format_exc(limit=3))
             self.stop.wait(self.slow_every)
@@ -182,7 +202,7 @@ class Engine:
     def run(self) -> None:
         source = self.feeds.pick_source()
         log(f"해외 가격 출처: {SOURCE_NAMES[source]}" + ("" if source == OFFICIAL_SOURCE else
-                                                    " — 바이낸스 선물에 연결되지 않아 대신 씀(정식 판정에서 제외되는 기록)"))
+                                                    " — OKX 선물에 연결되지 않아 대신 씀(정식 판정에서 제외되는 기록)"))
         cash = {p.key: p.capital + self.store.realized(p.key) for p in (FORMAL, ALWAYS)}
         self.scalper = Scalper(params=(FORMAL, ALWAYS), source=source, cash=cash)
         threading.Thread(target=self.slow_loop, daemon=True, name="paper-slow").start()

@@ -33,7 +33,7 @@ BTC = "KRW-BTC"
 FUNDING, KIMCHI = "_funding", "_kimchi"  # #13 보조 자료를 가격 표의 열로 넘긴다(전략이 따로 자료를 읽지 않도록)
 
 START_COIN = pd.Timestamp("2026-11-15")  # 이 날짜(UTC) 캔들 마감 결정부터
-START_ETF = pd.Timestamp("2026-11-16")
+START_ETF = pd.Timestamp("2026-11-20")  # #12 첫 결정(금요일 마감). 대조군도 같은 날 결정 → 같은 날(11-23) 시가 체결
 
 
 class StartAt(Strategy):
@@ -178,10 +178,18 @@ def funding_average(funding: pd.Series, dates: pd.DatetimeIndex, count: int = 9)
     return pd.Series(out, dtype=float)
 
 
+def previous_close(series: pd.Series, dates: pd.DatetimeIndex) -> pd.Series:
+    """날짜 D 에 'D 보다 앞선 날짜의 마지막 값'을 붙인다 (환율: 결정할 때 이미 확정돼 있던 값만, 주말은 그 전 값)."""
+    s = series.dropna().sort_index()
+    shifted = pd.Series(s.values, index=s.index + pd.Timedelta(days=1))  # D 의 값은 D+1 부터 쓸 수 있음
+    shifted = shifted[~shifted.index.duplicated(keep="last")]
+    return shifted.reindex(dates.union(shifted.index)).ffill().reindex(dates)
+
+
 def with_funding_kimchi(btc: Prices, funding: pd.Series, usdt_close: pd.Series, usdkrw: pd.Series) -> Prices:
     """업비트 비트코인 일봉 표에 펀딩 평균·김치 프리미엄 열을 붙인다(시가는 비워 둬서 거래 대상이 아님)."""
     dates = btc.dates
-    fx = usdkrw.reindex(dates.union(usdkrw.index)).ffill().reindex(dates)  # 주말은 직전 값
+    fx = previous_close(usdkrw, dates)
     kimchi = btc.close[BTC] / (usdt_close.reindex(dates) * fx) - 1
     close = btc.close[[BTC]].copy()
     close[FUNDING] = funding_average(funding, dates)
@@ -202,22 +210,24 @@ class SlowSpec:
     costs: CostModel
     integer_shares: bool
     start: pd.Timestamp
-    control: str | None = None  # 비교할 대조군 key
+    controls: tuple[str, ...] = ()  # 이겨야 하는 대조군 key (전부)
 
 
 SPECS = {
-    "s12": SlowSpec("s12", "#12 흔들림 맞춰 나눠 담기 + 주식 방어", "strategy", "W", ETF_COSTS, True, START_ETF, "c_etf4"),
-    "s13": SlowSpec("s13", "#13 펀딩비·김치 프리미엄", "strategy", "D", COIN_COSTS, False, START_COIN, "c_btc"),
-    "s14": SlowSpec("s14", "#14 코인 4개 주간 갈아타기", "strategy", "W", COIN_COSTS, False, START_COIN, "c_btc"),
+    "s12": SlowSpec("s12", "#12 흔들림 맞춰 나눠 담기 + 주식 방어", "strategy", "W", ETF_COSTS, True, START_ETF,
+                    ("c_etf4", "c_etf5")),
+    "s13": SlowSpec("s13", "#13 펀딩비·김치 프리미엄", "strategy", "D", COIN_COSTS, False, START_COIN, ("c_btc",)),
+    "s14": SlowSpec("s14", "#14 코인 4개 주간 갈아타기", "strategy", "W", COIN_COSTS, False, START_COIN, ("c_btc",)),
     "c_btc": SlowSpec("c_btc", "비트코인 그냥 보유", "control", "D", COIN_COSTS, False, START_COIN),
     "c_etf4": SlowSpec("c_etf4", "ETF 4개 나눠 담기", "control", "D", ETF_COSTS, True, START_ETF),
+    "c_etf5": SlowSpec("c_etf5", "ETF 5개 나눠 담기 (금 포함)", "control", "D", ETF_COSTS, True, START_ETF),
     "c_kodex": SlowSpec("c_kodex", "KODEX 200 보유", "control", "D", ETF_COSTS, True, START_ETF),
 }
 
 
 def make_strategy(key: str) -> Strategy:
     return {"s12": InverseVolTrend, "s14": WeeklySharpeRotation, "s13": lambda: FundingKimchi(START_COIN),
-            "c_btc": BuyAndHold, "c_etf4": BuyAndHold, "c_kodex": BuyAndHold}[key]()
+            "c_btc": BuyAndHold, "c_etf4": BuyAndHold, "c_etf5": BuyAndHold, "c_kodex": BuyAndHold}[key]()
 
 
 def replay(key: str, prices: Prices, capital: float = CAPITAL) -> BacktestResult:
@@ -243,7 +253,7 @@ def summarize(key: str, res: BacktestResult, prices: Prices, names: dict[str, st
     invested = sum(h["value"] for h in holdings)
     peak = curve.cummax()
     return {
-        "key": key, "name": spec.name, "kind": spec.kind, "control": spec.control,
+        "key": key, "name": spec.name, "kind": spec.kind, "controls": list(spec.controls),
         "start": spec.start.strftime("%Y-%m-%d"), "started": bool(prices.dates[-1] >= spec.start),
         "capital": float(eq.iloc[first]), "value": value, "ret": value / float(eq.iloc[first]) - 1,
         "max_drawdown": float((curve / peak - 1).min()), "cash": value - invested, "holdings": holdings,
@@ -254,3 +264,12 @@ def summarize(key: str, res: BacktestResult, prices: Prices, names: dict[str, st
                    for tr in res.trades.itertuples()],
         "total_cost": float(res.total_cost),
     }
+
+
+def decisions(key: str, res: BacktestResult) -> dict[str, dict[str, float]]:
+    """시작일 이후 결정일별 목표 비중 {날짜: {종목: 비중}} (0 인 종목은 뺀다). 결정을 그때그때 저장해 두는 데 쓴다."""
+    spec = SPECS[key]
+    out = {}
+    for d, row in res.decisions.loc[res.decisions.index >= spec.start].iterrows():
+        out[d.strftime("%Y-%m-%d")] = {t: round(float(w), 4) for t, w in row.items() if pd.notna(w) and abs(w) > 1e-9}
+    return out

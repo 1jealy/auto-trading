@@ -29,20 +29,22 @@
 
 ## 모의 투자 (src/autotrade/paper, crypto_live 모의 투자 탭)
 
-- 지금 도는 것: 단타 #17(정식)·#18(계속 거래, 비용 측정용), 느린 전략 #12·#13·#14, 대조군(비트코인 보유, ETF 4개 나눠 담기, KODEX 200).
+- 지금 도는 것: 단타 #17(정식)·#18(비용을 넘는 틈만 자주), 느린 전략 #12·#13·#14, 대조군(비트코인 보유, ETF 4개·5개 나눠 담기, KODEX 200).
   #15(DART 공시)·#16(LLM 뉴스)은 준비 중.
 - **규칙·숫자는 `docs/experiments.md`에 등록한 것과 같아야 한다.** `scalp.py`의 `FORMAL`/`ALWAYS`, `slow.py`의 기준값을 바꾸면
   새 시도로 기록해야 한다.
 - 단타 체결은 신호를 본 호가창이 아니라 **0.2초 뒤 새로 받은 호가창**으로 계산한다(`Scalper.on_book`). 이 순서를 바꾸지 말 것.
 - 느린 전략은 저장한 상태 없이 시작일 이후 시세로 매번 다시 계산한다(`slow.replay` → `run_backtest`). 아직 안 끝난 오늘 봉은
   마지막 줄로 들어가고, 엔진이 마지막 줄에서는 결정하지 않으므로 평가에만 쓰인다.
-- 해외 가격 출처는 바이낸스 선물이 기준. 연결이 막힌 곳(미국 클라우드)에서는 OKX 선물로 대신하고 `source`에 남긴다.
-  **정식 판정은 `binance_futures` 기록만** 쓴다. #13(펀딩비)은 바이낸스 선물에 연결되는 곳에서만 계산된다.
+- 해외 가격 출처는 **OKX 선물**이 기준(2026-11-15 시작 전 바이낸스에서 변경). OKX 가 안 되면 바이낸스로 대신하고 `source`에 남긴다.
+  **정식 판정은 `okx_swap` 기록만** 쓴다. #13 펀딩비도 OKX(받은 값은 `paper.db`의 funding 표에 쌓아 둠 — OKX 는 3개월치만 줌).
+- 단타 채점은 **사건 단위**(`store.group_events`, 60초 안 신호는 묶음). 느린 전략 결정은 `paper.db`의 decisions 표에 내린 순간 값으로
+  저장하고, 판정은 저장한 결정 기준(다시 계산한 값과 다르면 화면에 표시).
 - 기록은 `data/paper/`(Git 제외): `paper.db`(거래·관측·호가 비용·켜져 있던 시간), `live.json`, `slow.json`. 따로 백업할 것.
   시험할 때는 환경 변수 `PAPER_DATA_DIR`로 다른 폴더를 쓴다(진짜 기록에 섞지 않기).
 - 무료 서버 배포: `deploy/install.sh`(우분투, systemd + Cloudflare 무료 터널), 안내 `docs/server_setup.md`.
   서버는 `server.py --public --engine`: 127.0.0.1 에서만 듣고 **모든 접속에 접속 코드**를 묻는다(터널 뒤라 '이 컴퓨터면 통과'를 끔).
-  임시 화면용 허깅페이스 Spaces: `deploy/hf/Dockerfile`(`--host=0.0.0.0`, 코드는 Secret `CRYPTO_LIVE_PIN`). 미국이라 OKX 시험 기록만, 재시작하면 기록 삭제.
+  임시 화면용 허깅페이스 Spaces: `deploy/hf/Dockerfile`(`--host=0.0.0.0`, 코드는 Secret `CRYPTO_LIVE_PIN`). 재시작하면 기록이 지워지므로 정식 기록용은 아님.
 - 화면(`crypto_live/static/paper.*`)은 그리기만 한다. 계산을 화면 쪽에 넣지 말 것.
 - **실전 주문 기능과 주문용 API 키는 붙이지 않는다**(전부 모의). `.claude/settings.json`이 `.env`·토큰·PIN 파일 읽기를 막는다.
 

@@ -87,27 +87,67 @@ def test_timed_exit_sells_into_bids_and_records_costs():
     s = Scalper(params=(ALWAYS,))
     run_up(s)
     s.on_book(3.7, "BTC", book(99_990_000, 100_000_000))
-    s.on_tick(20.0, "BTC", 100.2, book(100_090_000, 100_100_000))
-    assert s.pos  # 20초 + 0.2초 전에는 안 판다
-    s.on_tick(23.9, "BTC", 100.2, book(100_090_000, 100_100_000))  # 3.7 + 20 + 0.2
+    s.on_tick(30.0, "BTC", 100.2, book(100_090_000, 100_100_000))
+    assert s.pos  # 30초 + 0.2초 전에는 안 판다 (따라잡지도, 출발점으로 돌아오지도 않음)
+    s.on_tick(34.0, "BTC", 100.2, book(100_090_000, 100_100_000))  # 3.7 + 30 + 0.2 지난 뒤
     assert not s.pos
     (tr,) = [e for e in s.drain() if e["type"] == "trade"]
-    assert tr["reason"] == "시간" and tr["exit_t"] == 23.9
+    assert tr["reason"] == "시간" and tr["exit_t"] == 34.0
     gross = 100_090_000 / 100_000_000
     assert tr["gross_pct"] == pytest.approx(gross - 1)
     assert tr["net_krw"] == pytest.approx(1_000_000 * gross * 0.9995 - 1_000_000 * 1.0005)
     assert s.cash["s18"] == pytest.approx(10_000_000 + tr["net_krw"])
 
 
-def test_no_second_entry_while_holding_and_stops_when_cash_runs_out():
-    s = Scalper(params=(ALWAYS,), cash={"s18": 1_500_000})
+def test_no_second_entry_while_holding_and_s17_stops_when_cash_runs_out():
+    s = Scalper(params=(ALWAYS,))
     run_up(s)
     s.on_book(3.7, "BTC", book(99_990_000, 100_000_000))
     s.on_tick(4.0, "BTC", 100.5, book(99_990_000, 100_000_000))  # 또 신호지만 들고 있음
     assert len(s.pos) == 1 and not s.entries
-    run_up(s, coin="ETH", bid=2_559_000, ask=2_560_000, t0=10.0)  # 남은 돈 약 50만 원 → 못 삼
-    assert not s.entries
-    assert any(e["type"] == "skip" and e["why"] == "남은 돈 부족" for e in s.drain())
+    f = Scalper(params=(FORMAL,), cash={"s17": 3_000_000})
+    formal_signal(f, book(1350, 1351, tick=1))  # 남은 돈 300만 원 < 500만 원 → 못 삼
+    assert not f.entries
+    assert any(e["type"] == "skip" and e["why"] == "남은 돈 부족" for e in f.drain())
+
+
+def test_s18_refills_cash_and_records_it():
+    s = Scalper(params=(ALWAYS,), cash={"s18": 500_000})
+    run_up(s)
+    assert len(s.entries) == 1  # 돈이 모자라도 신호는 받는다
+    s.on_book(3.7, "BTC", book(99_990_000, 100_000_000))
+    assert ("s18", "BTC") in s.pos
+    assert s.cash["s18"] == pytest.approx(500_000 + 10_000_000 - 1_000_000 * 1.0005)
+    (ev,) = [e for e in s.drain() if e["type"] == "refill"]
+    assert ev["amount"] == 10_000_000 and ev["key"] == "s18"
+
+
+def test_s18_needs_lag_above_cost_at_that_moment():
+    # 해외 +0.2%, 업비트 그대로 → 뒤처짐 0.2%p. 호가 차이 0.01% 면 비용 0.16% → 신호
+    s = Scalper(params=(ALWAYS,))
+    run_up(s)
+    assert len(s.entries) == 1
+    # 호가 차이가 0.1% 면 비용 0.1% + 0.1% + 0.05% = 0.25% > 0.2%p → 신호 없음
+    s2 = Scalper(params=(ALWAYS,))
+    run_up(s2, bid=99_900_000, ask=100_000_000)
+    assert not s2.entries
+    # 해외 +0.12% 는 뒤처짐이 충분해도 기준(+0.15%) 미달
+    s3 = Scalper(params=(ALWAYS,))
+    run_up(s3, g1=100.12)
+    assert not s3.entries
+
+
+def test_s18_sells_when_upbit_catches_up_or_origin_collapses():
+    s = Scalper(params=(ALWAYS,))
+    run_up(s)
+    s.on_book(3.7, "BTC", book(99_990_000, 100_000_000))
+    s.on_tick(5.0, "BTC", 100.2, book(100_200_000, 100_210_000))  # 매수 1호가 ≥ 신호 3초 전 매도 1호가 × 1.002
+    assert s.pos[("s18", "BTC")].exit_reason == "따라잡음"
+    s = Scalper(params=(ALWAYS,))
+    run_up(s)
+    s.on_book(3.7, "BTC", book(99_990_000, 100_000_000))
+    s.on_tick(5.0, "BTC", 100.0, book(99_990_000, 100_000_000))
+    assert s.pos[("s18", "BTC")].exit_reason == "출발점 붕괴"
 
 
 # ── 정식(#17) 조건 ──
@@ -170,7 +210,7 @@ def test_coinone_shadow_fill_uses_zero_fee():
     run_up(s)
     alt_in, alt_out = book(99_950_000, 100_050_000), book(100_150_000, 100_250_000)
     s.on_book(3.7, "BTC", book(99_990_000, 100_000_000), alt_in)
-    s.on_book(23.9, "BTC", book(100_090_000, 100_100_000), alt_out)
+    s.on_book(34.0, "BTC", book(100_090_000, 100_100_000), alt_out)
     (tr,) = [e for e in s.drain() if e["type"] == "trade"]
     assert tr["alt_net_pct"] == pytest.approx(100_150_000 / 100_050_000 - 1)
 
@@ -187,3 +227,23 @@ def test_radar_records_actual_offsets_and_cooldown():
     (r,) = [e for e in s.drain() if e["type"] == "radar"]
     assert r["points"][0]["at"] == pytest.approx(0.25) and r["points"][0]["ask"] == 100_010_000
     assert len(r["points"]) == 8 and r["ref_ask"] == 100_000_000
+
+
+# ── 채점: 사건 단위 ──
+def test_trades_with_signals_close_together_count_as_one_event(tmp_path):
+    from autotrade.paper.store import Store
+
+    store = Store(tmp_path / "p.db")
+    base = {"type": "trade", "key": "s18", "source": "okx_swap", "amount": 1_000_000, "entry_price": 1,
+            "exit_price": 1, "reason": "시간", "gross_pct": 0, "alt_net_pct": None, "move": 0.002, "lag": 0.002,
+            "detail": {}}
+    # 4개 코인이 같은 순간 신호(한 사건), 10분 뒤 하나 더
+    for i, (coin, sig, net) in enumerate([("BTC", 1000, 0.01), ("ETH", 1000.5, 0.01), ("XRP", 1001, 0.01),
+                                          ("SOL", 1001, 0.01), ("BTC", 1600, -0.002)]):
+        store.add_event({**base, "coin": coin, "signal_t": sig, "entry_t": sig + 0.2, "exit_signal_t": sig + 30,
+                         "exit_t": sig + 30.2, "net_pct": net, "net_krw": net * 1_000_000})
+    store.add_event({"type": "refill", "key": "s18", "t": 5, "amount": 10_000_000, "source": "okx_swap"})
+    s = store.scalp_summary("s18", "okx_swap")
+    assert s["n"] == 5 and s["n_events"] == 2 and s["refills"] == 1
+    assert s["mean_event"] == pytest.approx((0.01 - 0.002) / 2)
+    assert store.realized("s18") == pytest.approx(0.04 * 1_000_000 - 2_000 + 10_000_000)

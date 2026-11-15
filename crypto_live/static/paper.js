@@ -38,9 +38,10 @@ const SLOW_INFO = {
   s12: { desc: "ETF 5개를 덜 흔들리는 것일수록 많이 담고, 주식 두 개만 120일 평균 아래면 단기채권으로 피합니다. 매주 마지막 거래일 장 마감 뒤 계산, 다음 거래일 아침 체결.", color: "--s-a" },
   c_btc: { color: "--ink-3", dash: "" },
   c_etf4: { color: "--ink-3", dash: "7 4" },
+  c_etf5: { color: "--ink-3", dash: "12 3 2 3" },
   c_kodex: { color: "--ink-3", dash: "2 4" },
 };
-const SCALP_NAMES = { s17: "#17 틈 단타 (정식)", s18: "#18 계속 거래되는 단타" };
+const SCALP_NAMES = { s17: "#17 틈 단타 (정식)", s18: "#18 비용을 넘는 틈만 자주" };
 
 /** 내용이 바뀐 부분만 다시 그린다 (2초마다 전체를 갈아 끼우면 깜빡이고 가리키던 곳이 풀린다) */
 function changed(key, value) {
@@ -75,7 +76,7 @@ function renderEngine(d) {
   ];
   $("eng-facts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
   const warn = [];
-  if (!e.official) warn.push(`바이낸스 선물에 연결되지 않아 <b>${esc(e.source_name)}</b> 가격으로 대신하고 있어요. 이 기록은 시험용이라 #17 채점에 넣지 않습니다. 한국에서 켠 컴퓨터에서는 바이낸스로 연결됩니다.`);
+  if (!e.official) warn.push(`OKX 선물에 연결되지 않아 <b>${esc(e.source_name)}</b> 가격으로 대신하고 있어요. 이 기록은 시험용이라 #17·#18 채점에 넣지 않습니다.`);
   if (e.errors && e.errors.feed) warn.push(`시세를 받지 못하고 있어요: ${esc(e.errors.feed)}`);
   $("eng-warn").hidden = !warn.length;
   $("eng-warn").innerHTML = warn.join("<br>");
@@ -164,17 +165,18 @@ function renderRadar(d) {
 
 /* ── 단타 카드 ── */
 function criteria(s, official) {
-  const need = s.rules.min_trades, enough = s.n >= need;
+  const need = s.rules.min_events, enough = s.n_events >= need;
   const mark = (ok, ready = true) => (!ready ? "wait" : ok ? "ok" : "no");
   const rows = [
     ["건당 평균이 플러스 (업비트 비용 뺀 것)", s.n ? pct(s.mean_net, 3) : "거래 없음", mark(s.mean_net > 0, s.n > 0)],
-    ["우연이 아닐 것 (t값 2.5 이상)", s.t == null ? "거래가 더 필요해요" : `t값 ${s.t.toFixed(2)}`, mark(s.t >= 2.5, s.t != null)],
+    ["우연이 아닐 것 (사건 단위 t값 2.5 이상)", s.t == null ? "거래가 더 필요해요" : `t값 ${s.t.toFixed(2)} (거래 하나하나로 세면 ${s.t_trades == null ? "—" : s.t_trades.toFixed(2)})`, mark(s.t >= 2.5, s.t != null)],
     ["가장 많이 번 3일을 빼도 플러스", s.mean_ex_top3 == null ? "날짜가 4일 이상 필요해요" : pct(s.mean_ex_top3, 3), mark(s.mean_ex_top3 > 0, s.mean_ex_top3 != null)],
     ["앞 절반·뒤 절반 모두 플러스", s.first_half == null ? "거래가 더 필요해요" : `${pct(s.first_half, 3)} / ${pct(s.second_half, 3)}`, mark(s.first_half > 0 && s.second_half > 0, s.first_half != null)],
   ];
   const head = !official ? "시험 기록이라 채점에 넣지 않아요 (참고로만 표시)"
-    : enough ? `거래 ${num(s.n)}건 — 채점할 수 있어요` : `거래 ${num(s.n)} / ${num(need)}건 — 아직 채점 전 (지금 값은 참고)`;
-  return `<h3 class="mini-title">채점 <small>${head}</small></h3><ul class="check-list crit">${rows.map(([t, v, m]) => `
+    : enough ? `사건 ${num(s.n_events)}번 — 채점할 수 있어요` : `사건 ${num(s.n_events)} / ${num(need)}번 — 아직 채점 전 (지금 값은 참고)`;
+  return `<h3 class="mini-title">채점 <small>${head}</small></h3>
+    <p class="fine-note">60초 안에 이어진 신호(여러 코인이 같이 움직인 때 등)는 한 사건으로 묶어 셉니다. 거래 ${num(s.n)}건 = 사건 ${num(s.n_events || 0)}번.</p><ul class="check-list crit">${rows.map(([t, v, m]) => `
     <li class="check ${m}">${icon(m)}<div><p class="check-title">${t}</p><p class="check-detail">${v}</p></div></li>`).join("")}</ul>`;
 }
 function groupTable(title, groups) {
@@ -189,7 +191,7 @@ function renderScalp(d, key) {
   const pnl = s.value - s.capital;
   const tiles = [
     ["계좌 가치", won(s.value), `<span class="pnl-inline" data-dir="${dirOf(pnl)}">${won(pnl, true)} (${pct(pnl / s.capital)})</span>`],
-    ["거래", `${num(s.n)}건`, s.n ? `오늘 ${num(s.today)}건 · ${s.days}일` : "아직 없음"],
+    ["거래", `${num(s.n)}건`, s.n ? `오늘 ${num(s.today)}건 · ${s.days}일${s.refills ? ` · 돈 다시 채움 ${num(s.refills)}번` : ""}` : "아직 없음"],
     ["건당 평균", `<span data-dir="${dirOf(s.mean_net)}">${pct(s.mean_net, 3)}</span>`, `비용 빼기 전 ${pct(s.mean_gross, 3)}`],
     ["이긴 비율", s.n ? pct(s.win_rate, 0, false) : "—", "수수료까지 빼고 남은 거래"],
     ["코인원이었다면", `<span data-dir="${dirOf(s.mean_alt)}">${pct(s.mean_alt, 3)}</span>`, s.n_alt ? `수수료 0% 가정 · ${num(s.n_alt)}건 비교` : "수수료 0% 가정"],
@@ -311,23 +313,30 @@ function renderSlowCard(d, key) {
   const head = (chip) => `<div class="card-head"><h2 class="card-title">${esc(title)}</h2>${chip}</div><p class="card-sub">${SLOW_INFO[key].desc}</p>`;
   if (!it) { box.innerHTML = `${head("")}<p class="empty">엔진이 한 번 계산하면 보여요 (켠 뒤 1분쯤)</p>`; return; }
   if (it.error) {
-    const why = key === "s13" && it.error.includes("451") ? "이 컴퓨터에서는 바이낸스 선물(펀딩비)에 연결할 수 없어요. 한국에서 켠 컴퓨터에서는 계산됩니다." : it.error;
+    const why = it.error;
     box.innerHTML = `${head('<span class="chip chip-warn">자료 없음</span>')}<p class="warn-line">${esc(why)}</p>`;
     return;
   }
-  const ctl = items[it.control], until = d.slow.next[key];
+  const until = d.slow.next[key];
   const tiles = [
     ["계좌 가치", won(it.value), `<span class="pnl-inline" data-dir="${dirOf(it.ret)}">${pct(it.ret)}</span>`],
     ["가장 크게 떨어졌을 때", pct(it.max_drawdown, 1), "시작 이후"],
-    [ctl && !ctl.error ? ctl.name : "비교 기준", ctl && !ctl.error ? `<span data-dir="${dirOf(ctl.ret)}">${pct(ctl.ret)}</span>` : "—", "같은 기간"],
   ];
+  for (const c of (it.controls || []).map((k) => items[k])) {
+    tiles.push([c && !c.error ? c.name : "비교 기준", c && !c.error ? `<span data-dir="${dirOf(c.ret)}">${pct(c.ret)}</span>` : "—",
+      c && !c.error ? `같은 기간 · 가장 크게 떨어졌을 때 ${pct(c.max_drawdown, 1)}` : "같은 기간"]);
+  }
+  const fz = it.frozen;
+  const frozenLine = !fz ? "" : !fz.n ? `<p class="fine-note">첫 결정부터 내린 순간의 값으로 저장해 둡니다(판정은 저장한 결정으로).</p>` : fz.changed.length
+    ? `<p class="warn-line">처음 저장한 결정과 지금 다시 계산한 결정이 다른 날이 있어요: ${fz.changed.map(esc).join(", ")}. 판정은 처음 저장한 결정으로 합니다(자료가 나중에 고쳐졌을 수 있음).</p>`
+    : `<p class="fine-note">결정 ${num(fz.n)}번을 내린 순간의 값으로 저장해 두었고, 다시 계산해도 모두 같아요.</p>`;
   const explain = { s13: explain13, s14: explain14, s12: explain12 }[key](it.explain);
   const trades = it.trades.slice(-8).reverse();
   box.innerHTML = `${head(`<span class="chip">${it.trades.length ? "진행 중" : `${it.start} 시작`}</span>`)}
     <div class="tiles">${tiles.map(([l, v, sub]) => `<div class="tile"><span class="tile-label">${esc(l)}</span><b>${v}</b><small>${sub}</small></div>`).join("")}</div>
     <div class="countdown">${icon("clock")}<span>다음 판단까지 <b data-until="${until}">—</b></span><span class="muted">${clock(until, true).slice(0, -3)}${key === "s12" ? " 무렵 (휴장이면 그 전 거래일)" : ""}</span></div>
     <h3 class="mini-title">지금 보유</h3><p class="chips">${holdingsLine(it)}</p>
-    <h3 class="mini-title">판단 근거</h3>${explain}
+    <h3 class="mini-title">판단 근거</h3>${explain}${frozenLine}
     <h3 class="mini-title">거래 기록 <small>비용 합계 ${won(it.total_cost)}</small></h3>
     ${trades.length ? `<ol class="timeline short">${trades.map((t) => `<li class="tl ${t.side === "buy" ? "buy" : "sell"}"><span class="when">${t.date} 아침</span><span class="what">${esc(t.name)} ${t.side === "buy" ? "삼" : "팖"} · ${won(t.amount)} · ${num(t.price, t.price >= 100 ? 0 : 2)}원에</span></li>`).join("")}</ol>`
     : `<p class="empty">아직 체결된 거래가 없어요</p>`}`;
