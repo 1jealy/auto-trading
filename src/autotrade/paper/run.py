@@ -282,11 +282,19 @@ def main(argv: list[str] | None = None) -> None:
         log("멈춤")
 
 
-def start_in_thread() -> Engine:
-    """화면 서버 안에서 함께 돌릴 때. 엔진이 죽으면 10초 뒤 다시 시작한다."""
-    engine = Engine()
+def start_in_thread() -> threading.Thread:
+    """화면 서버 안에서 함께 돌릴 때. 엔진이 죽으면 10초 뒤 다시 시작한다.
 
+    방금 꺼진 엔진의 기록(20초 안)이 남아 있으면 '이미 돌고 있음'으로 거절되므로, 그때는 잠깐 기다렸다 다시 만든다.
+    """
     def forever() -> None:
+        engine = None
+        while engine is None:
+            try:
+                engine = Engine()
+            except RuntimeError as e:
+                log(f"{e} — 25초 뒤 다시 확인")
+                time.sleep(25)
         while not engine.stop.is_set():
             try:
                 engine.run()
@@ -294,8 +302,9 @@ def start_in_thread() -> Engine:
                 log("엔진 오류 — 10초 뒤 다시 시작:\n" + traceback.format_exc(limit=4))
                 engine.stop.wait(10)
 
-    threading.Thread(target=forever, daemon=True, name="paper-engine").start()
-    return engine
+    th = threading.Thread(target=forever, daemon=True, name="paper-engine")
+    th.start()
+    return th
 
 
 if __name__ == "__main__":

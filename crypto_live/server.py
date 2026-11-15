@@ -9,6 +9,8 @@
 - 실시간 체결·호가는 브라우저가 업비트 웹소켓에 직접 연결한다(이 서버를 거치지 않음).
 - /api/account: 계좌 정보. 지금은 **모의 계좌**(crypto_live/account.json, 없으면 static/mock_account.json).
 - --lan 이면 다른 기기는 PIN 을 입력해야 들어올 수 있다. 이 컴퓨터에서 여는 것은 PIN 없이 된다.
+- --public 은 인터넷 서버용(HTTPS 터널 뒤): **모든 접속에 접속 코드를 묻는다**(터널을 거치면 모두 이 컴퓨터에서 온 것처럼
+  보이므로 "이 컴퓨터면 통과"를 끈다). 코드는 12자리로 길게 만들고, 쿠키는 HTTPS 에서만 보낸다. 127.0.0.1 에서만 듣는다.
 - /api/paper/*: 모의 투자 기록(data/paper/)을 읽어 보여 준다. --engine 을 붙이면 모의 투자 엔진(src/autotrade/paper)도
   이 창 안에서 함께 돈다. 엔진은 공개 시세만 읽고 주문은 내지 않는다.
 """
@@ -40,6 +42,7 @@ PIN_FILE = HERE / ".pin"
 
 # 실행할 때 main() 에서 정해진다 (불러오기만 할 때는 이 컴퓨터 전용 기본값)
 LAN = False
+PUBLIC = False
 PORT = 8765
 
 # 허용하는 경로 → 실제 주소. 그 외 요청은 거절한다.
@@ -53,13 +56,15 @@ OPEN_PATHS = {"/login", "/login.html", "/styles.css", "/manifest.webmanifest"}
 OPEN_PREFIXES = ("/icons/",)
 
 
-def load_pin() -> str:
+def load_pin(length: int = 6) -> str:
     pin = os.environ.get("CRYPTO_LIVE_PIN", "").strip()
     if pin:
         return pin
     if PIN_FILE.exists():
-        return PIN_FILE.read_text(encoding="utf-8").strip()
-    pin = f"{secrets.randbelow(10**6):06d}"
+        saved = PIN_FILE.read_text(encoding="utf-8").strip()
+        if len(saved) >= length:
+            return saved
+    pin = "".join(secrets.choice("0123456789") for _ in range(length))
     PIN_FILE.write_text(pin, encoding="utf-8")
     return pin
 
@@ -121,7 +126,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.client_address[0] in ("127.0.0.1", "::1")
 
     def _authed(self) -> bool:
-        if not LAN or self._is_local():
+        if not LAN or (self._is_local() and not PUBLIC):
             return True
         token = SimpleCookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE)
         if not token:
@@ -163,7 +168,7 @@ class Handler(SimpleHTTPRequestHandler):
                 FAILS["count"] = 0
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header("Set-Cookie", f"{SESSION_COOKIE}={token}; Max-Age={SESSION_DAYS * 86400}; "
-                                           "Path=/; HttpOnly; SameSite=Strict")
+                                           "Path=/; HttpOnly; SameSite=Strict" + ("; Secure" if PUBLIC else ""))
             self.send_header("Location", nxt)
             self.end_headers()
             return
@@ -184,7 +189,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/account":
             return self._account()
         if path == "/api/server":
-            return self._json(HTTPStatus.OK, {"lan": LAN, "local": self._is_local()})
+            return self._json(HTTPStatus.OK, {"lan": LAN, "local": self._is_local() and not PUBLIC})
         if path.startswith("/api/paper/"):
             return self._paper(path[len("/api/paper/"):], dict(urllib.parse.parse_qsl(url.query)))
         if path.startswith("/api/upbit/"):
@@ -278,14 +283,16 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    global LAN, PORT, PIN
+    global LAN, PUBLIC, PORT, PIN
     if sys.stdout is not None:
         sys.stdout.reconfigure(encoding="utf-8")
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    LAN = "--lan" in sys.argv
+    PUBLIC = "--public" in sys.argv
+    LAN = "--lan" in sys.argv or PUBLIC
     PORT = int(args[0]) if args else 8765
-    PIN = load_pin() if LAN else ""
-    server = ThreadingHTTPServer(("0.0.0.0" if LAN else "127.0.0.1", PORT), Handler)
+    PIN = load_pin(12 if PUBLIC else 6) if LAN else ""
+    host = "0.0.0.0" if LAN and not PUBLIC else "127.0.0.1"  # 공개 서버는 터널만 들어올 수 있게
+    server = ThreadingHTTPServer((host, PORT), Handler)
     if "--engine" in sys.argv:
         try:
             paper_store()
@@ -296,7 +303,10 @@ def main():
         except Exception as e:  # noqa: BLE001
             print(f"모의 투자 엔진을 켜지 못했습니다: {e}", flush=True)
     print(f"이 컴퓨터에서: http://127.0.0.1:{PORT}", flush=True)
-    if LAN:
+    if PUBLIC:
+        print(f"접속 코드: {PIN}   (crypto_live/.pin 에 저장됨. 모든 접속에 필요)", flush=True)
+        print("이 서버는 127.0.0.1 에서만 듣습니다. 밖에서는 HTTPS 터널 주소로 들어오세요(docs/server_setup.md).", flush=True)
+    elif LAN:
         for a in lan_addresses():
             print(f"폰·패드에서 (같은 와이파이): http://{a}:{PORT}", flush=True)
         print(f"접속 PIN: {PIN}   (crypto_live/.pin 에 저장됨, 바꾸려면 파일을 지우고 다시 실행)", flush=True)

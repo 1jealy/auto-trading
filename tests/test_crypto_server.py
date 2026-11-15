@@ -106,3 +106,41 @@ def test_open_redirect_blocked(remote_server):
     except urllib.error.HTTPError as e:
         loc = e.headers["Location"]
     assert loc == "/account.html"
+
+
+@pytest.fixture()
+def public_server(monkeypatch):
+    """--public: 터널 뒤라 모든 접속이 127.0.0.1 로 보이는 상황."""
+    spec = importlib.util.spec_from_file_location("cl_server_pub", ROOT / "crypto_live" / "server.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "LAN", True)
+    monkeypatch.setattr(mod, "PUBLIC", True)
+    monkeypatch.setattr(mod, "PIN", "135792468024")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.Handler)  # _is_local 은 그대로 True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield mod, f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+
+
+def test_public_mode_asks_code_even_from_localhost(public_server):
+    _, base = public_server
+    status, _, _ = get(f"{base}/api/paper/summary")
+    assert status == 401
+    status, headers = login(base, "135792468024")
+    assert status == 303
+    assert "Secure" in headers["Set-Cookie"] and "HttpOnly" in headers["Set-Cookie"]
+    cookie = headers["Set-Cookie"].split(";")[0]
+    assert get(f"{base}/api/server", cookie)[0] == 200
+
+
+def test_public_code_is_long(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("cl_server_pin", ROOT / "crypto_live" / "server.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "PIN_FILE", tmp_path / ".pin")
+    monkeypatch.delenv("CRYPTO_LIVE_PIN", raising=False)
+    (tmp_path / ".pin").write_text("123456")  # 예전 6자리는 공개 모드에서 다시 만든다
+    pin = mod.load_pin(12)
+    assert len(pin) == 12 and pin.isdigit() and (tmp_path / ".pin").read_text() == pin

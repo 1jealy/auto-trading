@@ -40,6 +40,8 @@
   **정식 판정은 `binance_futures` 기록만** 쓴다. #13(펀딩비)은 바이낸스 선물에 연결되는 곳에서만 계산된다.
 - 기록은 `data/paper/`(Git 제외): `paper.db`(거래·관측·호가 비용·켜져 있던 시간), `live.json`, `slow.json`. 따로 백업할 것.
   시험할 때는 환경 변수 `PAPER_DATA_DIR`로 다른 폴더를 쓴다(진짜 기록에 섞지 않기).
+- 무료 서버 배포: `deploy/install.sh`(우분투, systemd + Cloudflare 무료 터널), 안내 `docs/server_setup.md`.
+  서버는 `server.py --public --engine`: 127.0.0.1 에서만 듣고 **모든 접속에 접속 코드**를 묻는다(터널 뒤라 '이 컴퓨터면 통과'를 끔).
 - 화면(`crypto_live/static/paper.*`)은 그리기만 한다. 계산을 화면 쪽에 넣지 말 것.
 - **실전 주문 기능과 주문용 API 키는 붙이지 않는다**(전부 모의). `.claude/settings.json`이 `.env`·토큰·PIN 파일 읽기를 막는다.
 
