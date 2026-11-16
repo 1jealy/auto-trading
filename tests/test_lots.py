@@ -83,3 +83,54 @@ def test_resample_ohlc_uses_first_open_and_last_close():
     df = pd.DataFrame({"open": range(8), "close": range(10, 18)}, index=pd.date_range("2024-01-01", periods=8, freq="h"))
     r = resample_ohlc(df, "4h")
     assert list(r["open"]) == [0, 4] and list(r["close"]) == [13, 17]
+
+
+# ── #23 ──
+from autotrade.lots import AdaptiveRules, daily_unit, simulate_adaptive  # noqa: E402
+
+
+def adaptive(c, rules, u=0.05, opens=None):
+    o, cl = frames({"A": c}, opens)
+    unit = pd.DataFrame({"A": [u] * len(c)}, index=cl.index)
+    return simulate_adaptive(o, cl, unit, rules)
+
+
+def test_daily_unit_uses_only_completed_days():
+    idx = pd.date_range("2024-01-01", periods=24 * 25, freq="4h")
+    c = pd.DataFrame({"A": np.where(np.arange(len(idx)) // 6 % 2 == 0, 100.0, 110.0)}, index=idx)  # 하루마다 ±10%
+    u = daily_unit(c, days=3)
+    assert u["A"].iloc[:6 * 4].isna().all()  # 3일치 변화율이 모이기 전엔 없음
+    first = u["A"].dropna()
+    assert first.index[0] == pd.Timestamp("2024-01-05")  # 1~4일 완결 → 5일 첫 봉부터
+    assert first.iloc[0] == pytest.approx((0.10 + 1 / 11 + 0.10) / 3, abs=1e-6)  # 1~3일째 변화율 +10%, −9.09%, +10%의 평균
+
+
+def test_unit_stop_and_target_use_unit_at_buy():
+    c = [10, 10, 10, 11, 11, 10.4, 10.3, 10.3]  # 11에 사고 U=5% → 손절가 11 x 0.95 = 10.45
+    res = adaptive(c, AdaptiveRules(3, stop_mult=1.0, target_mult=3.0, cost=0.0, lot_krw=100.0, max_lots=1, capital=1000.0))
+    t = res.trades
+    assert len(t) == 1 and t.iloc[0]["why"] == "손절" and t.iloc[0]["buy_price"] == 11.0
+    assert t.iloc[0]["sell_price"] == 10.3 or t.iloc[0]["sell_price"] == 10.4  # 손절 판단 봉의 다음 봉 시가
+
+
+def test_trailing_stop_follows_the_peak_and_has_no_target():
+    c = [10, 10, 10, 11, 12, 14, 16, 15.1, 14.8, 14.8]  # 16까지 오른 뒤 내려옴: 추적 폭 1.0 x 5% → 16 x 0.95 = 15.2
+    res = adaptive(c, AdaptiveRules(3, stop_mult=1.0, trail_mult=1.0, cost=0.0, lot_krw=100.0, max_lots=1, capital=1000.0))
+    t = res.trades
+    assert len(t) == 1 and t.iloc[0]["why"] == "추적 손절"
+    assert t.iloc[0]["sell_price"] == 15.1  # 종가 15.1 ≤ 15.2 → 다음 봉 시가(= 그 봉 종가 15.1)에 팖
+    assert t.iloc[0]["ret"] > 0.3  # 오르는 동안 계속 들고 있었다(익절 없음)
+
+
+def test_trend_exit_sells_below_exit_ma_even_below_entry_ma():
+    c = [10, 10, 10, 11, 12, 13, 12.9, 11.5, 11.4, 11.4]
+    res = adaptive(c, AdaptiveRules(3, stop_mult=5.0, exit_ma_bars=2, cost=0.0, lot_krw=100.0, max_lots=1, capital=1000.0), u=0.05)
+    assert (res.trades["why"] == "추세 이탈").all() and len(res.trades) >= 1
+
+
+def test_adaptive_waits_until_unit_is_known_and_target_only_above_ma():
+    c = [10, 10, 10, 11, 12, 13, 14, 15]
+    o, cl = frames({"A": c})
+    unit = pd.DataFrame({"A": [np.nan] * 5 + [0.05] * 3}, index=cl.index)
+    res = simulate_adaptive(o, cl, unit, AdaptiveRules(3, 1.0, 3.0, cost=0.0, lot_krw=100.0, max_lots=1, capital=1000.0))
+    assert res.buys == 1 and res.open_lots["buy_t"].iloc[0] > T[5]  # U 가 생긴 뒤에야 산다
