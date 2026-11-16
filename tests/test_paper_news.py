@@ -108,6 +108,16 @@ def test_before_start_not_asked():
     assert NewsWatcher(st, asker, NAMES, start=None).step([])["skipped"]
 
 
+def test_article_published_before_start_not_asked():
+    """처음 켰을 때 RSS 에 남아 있던 등록 전 기사는 묻지 않는다."""
+    st = Store(":memory:")
+    asker = FakeAsker([{"id": 0, "company_code": "196170", "positive_new": True, "strength": 5, "reason": "x"}])
+    w = NewsWatcher(st, asker, NAMES, start=5000.0)
+    w.step(items(("old", "알테오젠 허가"), t=4000.0) + items(("new", "알테오젠 미국 FDA 허가 승인"), t=6000.0), now=6000.0)
+    assert st.news_counts() == {"before_start": 1, "asked": 1}
+    assert [s["link"] for s in st.news_signals()] == ["new"]
+
+
 def kst(s):
     return pd.Timestamp(s).timestamp() - KST
 

@@ -36,7 +36,7 @@ NOVELTY_DAYS = 3
 NOVELTY_JACCARD = 0.5
 BUY_CUTOFF = (8, 50)  # 한국 시각 08:50 전 신호 → 그날 시가
 HOLD = 5
-START: float | None = None  # 등록하는 순간(유닉스 초). None 이면 기록하지 않음
+START: float | None = 1794798170.0  # 등록한 순간 2026-11-16 12:02 KST (docs/experiments.md #16). 이전 기사는 묻지 않음
 NEWS_PATH = DATA_DIR / "news.json"
 COMPANIES = Path(__file__).with_name("news_companies.csv")
 UA = {"User-Agent": "Mozilla/5.0 (personal research; RSS reader)"}
@@ -260,7 +260,8 @@ class NewsWatcher:
         todo = []
         for n in new:
             cands = match_companies(n["title"], self.names)
-            status = "before_start" if now < self.start else ("candidate" if cands else "no_company")
+            old = now < self.start or (n.get("published") is not None and n["published"] < self.start)
+            status = "before_start" if old else ("candidate" if cands else "no_company")
             self.store.news_mark(n["link"], status, cands)
             if status == "candidate":
                 n["candidates"] = cands

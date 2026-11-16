@@ -31,7 +31,8 @@
 ## 모의 투자 (src/autotrade/paper, crypto_live 모의 투자 탭)
 
 - 지금 도는 것: 단타 #17(정식)·#18(비용을 넘는 틈만 자주), 느린 전략 #12·#13·#14, 대조군(비트코인 보유, ETF 4개·5개 나눠 담기, KODEX 200).
-  #15(DART 공시)는 백테스트에서 탈락(모의로 안 넘김). #16(LLM 뉴스)은 준비 중.
+  #15(DART 공시)는 백테스트에서 탈락(모의로 안 넘김). #16(LLM 뉴스)은 2026-11-16 모의 기록 시작
+  (`paper/news.py`, 서버 `.env`의 `CLAUDE_CODE_OAUTH_TOKEN` 필요, 준비는 `docs/server_setup.md`).
 - **규칙·숫자는 `docs/experiments.md`에 등록한 것과 같아야 한다.** `scalp.py`의 `FORMAL`/`ALWAYS`, `slow.py`의 기준값을 바꾸면
   새 시도로 기록해야 한다.
 - 단타 체결은 신호를 본 호가창이 아니라 **0.2초 뒤 새로 받은 호가창**으로 계산한다(`Scalper.on_book`). 이 순서를 바꾸지 말 것.
