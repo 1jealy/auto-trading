@@ -6,7 +6,7 @@ import time
 
 from autotrade.paper.feeds import SOURCE_NAMES
 from autotrade.paper.news import NEWS_PATH
-from autotrade.paper.scalp import ALWAYS, FORMAL
+from autotrade.paper.scalp import ALWAYS, EXTREME, FORMAL
 from autotrade.paper.store import LIVE_PATH, OFFICIAL_SOURCE, SLOW_PATH, Store, read_json
 
 RULES = {
@@ -14,7 +14,20 @@ RULES = {
             "take": FORMAL.take, "stop": FORMAL.stop, "fee": FORMAL.fee, "min_events": 100},
     "s18": {"move": ALWAYS.move, "cost_gap": ALWAYS.cost_gap, "amount": ALWAYS.amount, "max_hold": ALWAYS.max_hold,
             "fee": ALWAYS.fee, "min_events": 200},
+    "s21": {"move": EXTREME.move, "lag": EXTREME.lag, "amount": EXTREME.amount, "max_hold": EXTREME.max_hold,
+            "fee": EXTREME.fee, "min_events": 300},
 }
+_SLOW_SCALP: dict = {}  # 거래가 아주 많은 s21 은 2분에 한 번만 다시 계산한다
+
+
+def _scalp(store: Store, p, source: str, now: float) -> dict:
+    if p.key != "s21":
+        return store.scalp_summary(p.key, source, p.capital)
+    hit = _SLOW_SCALP.get((p.key, source))
+    if hit is None or now - hit[0] > 120:
+        hit = (now, store.scalp_summary(p.key, source, p.capital))
+        _SLOW_SCALP[(p.key, source)] = hit
+    return dict(hit[1])
 
 
 def build_summary(store: Store, now: float | None = None) -> dict:
@@ -24,8 +37,8 @@ def build_summary(store: Store, now: float | None = None) -> dict:
     sources = store.sources()
     source = (live or {}).get("source") or (sources[0] if sources else OFFICIAL_SOURCE)
     scalp = {}
-    for p in (FORMAL, ALWAYS):
-        s = store.scalp_summary(p.key, source, p.capital)
+    for p in (FORMAL, ALWAYS, EXTREME):
+        s = _scalp(store, p, source, now)
         s["rules"] = RULES[p.key]
         scalp[p.key] = s
     return {

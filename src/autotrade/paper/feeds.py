@@ -7,8 +7,10 @@ OKX 에 연결되지 않으면 바이낸스 선물, 그다음 바이낸스 현�
 
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -16,6 +18,14 @@ import pandas as pd
 from autotrade.paper.book import Book
 
 COINS = ("BTC", "ETH", "XRP", "SOL")
+UNIVERSE_FILE = Path(__file__).with_name("scalp_universe.txt")
+BULK_FROM = 8  # 코인이 이 수보다 많으면 해외 시세를 전체 한 번에 받는다(코인마다 요청하면 OKX 한도에 걸림)
+
+
+def load_universe(path: Path = UNIVERSE_FILE) -> tuple[str, ...]:
+    """#21 단타가 보는 코인 (등록 때 고정한 목록)."""
+    rows = [x.strip() for x in path.read_text(encoding="utf-8").splitlines()]
+    return tuple(x for x in rows if x and not x.startswith("#"))
 SOURCES = ("okx_swap", "binance_futures", "binance_spot")
 SOURCE_NAMES = {"binance_futures": "바이낸스 선물", "okx_swap": "OKX 선물", "binance_spot": "바이낸스 현물"}
 UA = {"User-Agent": "Mozilla/5.0 (paper-trading research; public market data only)"}
@@ -38,8 +48,33 @@ class Feeds:
         self.timeout = timeout
         self.pool = ThreadPoolExecutor(max_workers=8)
         self.source = source
+        self.base = tuple(c for c in COINS if c in self.coins) or self.coins[:4]
+        self.up_lock = threading.Lock()
+        self.up_last = 0.0
+        self.active: tuple[str, ...] = self.coins  # 지금 실제로 받을 수 있는 코인(상장폐지·중단은 빠짐)
+        self.bad_until = 0.0
+
+    def refresh_active(self) -> tuple[str, ...]:
+        """업비트 원화 마켓에 있고 OKX 선물 시세가 있는 코인만 남긴다. 기본 코인은 항상 남긴다."""
+        try:
+            mk = self._get("https://api.upbit.com/v1/market/all", {"isDetails": "true"}, timeout=10)
+            up = {m["market"][4:] for m in mk if m["market"].startswith("KRW-") and not m.get("market_event", {}).get("warning")}
+            tk = self._get("https://www.okx.com/api/v5/market/tickers", {"instType": "SWAP"}, timeout=10)["data"]
+            ok = {d["instId"][:-10] for d in tk if d["instId"].endswith("-USDT-SWAP") and d.get("bidPx") and d.get("askPx")}
+        except Exception:  # noqa: BLE001
+            return self.active  # 확인 못 하면 그대로
+        self.active = tuple(c for c in self.coins if c in self.base or (c in up and c in ok))
+        return self.active
+
+    UPBIT_SPACING = 0.105  # 업비트 요청 시작 사이 최소 간격(초당 10회 한도, 요청이 둘로 나뉘어도 넘지 않게)
 
     def _get(self, url: str, params: dict | None = None, timeout: float | None = None) -> Any:
+        if "api.upbit.com" in url:
+            with self.up_lock:
+                wait = self.up_last + self.UPBIT_SPACING - time.time()
+                if wait > 0:
+                    time.sleep(wait)
+                self.up_last = time.time()
         r = self.s.get(url, params=params, headers=UA, timeout=timeout or self.timeout)
         if r.status_code != 200:
             raise FeedError(f"HTTP {r.status_code} {url.split('?')[0]}")
@@ -52,7 +87,7 @@ class Feeds:
         for src in SOURCES:
             try:
                 mids = self._global(src)
-                if len(mids) == len(self.coins):
+                if all(c in mids for c in self.base):
                     self.source = src
                     return src
             except Exception as e:  # noqa: BLE001
@@ -65,25 +100,49 @@ class Feeds:
         return self._global(self.source)
 
     def _global(self, src: str) -> dict[str, float]:
+        if src in ("binance_futures", "binance_spot") and len(self.coins) > BULK_FROM:
+            # 대체 출처는 기본 코인만 (정식 판정에 안 쓰는 기록이라 단순하게)
+            coins = self.base
+        else:
+            coins = self.coins
         if src == "binance_futures":
             def one(c):
                 d = self._get("https://fapi.binance.com/fapi/v1/ticker/bookTicker", {"symbol": f"{c}USDT"})
                 return c, (float(d["bidPrice"]) + float(d["askPrice"])) / 2
             return dict(self.pool.map(one, self.coins))
+        if src == "okx_swap" and len(self.coins) > BULK_FROM:
+            rows = self._get("https://www.okx.com/api/v5/market/tickers", {"instType": "SWAP"})["data"]
+            want = set(self.coins)
+            out = {}
+            for d in rows:
+                c = d["instId"][:-10]
+                if d["instId"].endswith("-USDT-SWAP") and c in want and d.get("bidPx") and d.get("askPx"):
+                    out[c] = (float(d["bidPx"]) + float(d["askPx"])) / 2
+            return out
         if src == "okx_swap":
             def one(c):
                 d = self._get("https://www.okx.com/api/v5/market/ticker", {"instId": f"{c}-USDT-SWAP"})["data"][0]
                 return c, (float(d["bidPx"]) + float(d["askPx"])) / 2
             return dict(self.pool.map(one, self.coins))
         if src == "binance_spot":
-            syms = "[" + ",".join(f'"{c}USDT"' for c in self.coins) + "]"
+            syms = "[" + ",".join(f'"{c}USDT"' for c in coins) + "]"
             rows = self._get("https://data-api.binance.vision/api/v3/ticker/bookTicker", {"symbols": syms})
             return {r["symbol"][:-4]: (float(r["bidPrice"]) + float(r["askPrice"])) / 2 for r in rows}
         raise FeedError(f"모르는 출처: {src}")
 
     # ── 국내 호가창 ──
-    def upbit_books(self) -> dict[str, Book]:
-        rows = self._get("https://api.upbit.com/v1/orderbook", {"markets": ",".join(f"KRW-{c}" for c in self.coins)})
+    def upbit_books(self, coins=None) -> dict[str, Book]:
+        """코인 호가창. coins 를 안 주면 지금 받을 수 있는 코인 전부."""
+        coins = tuple(coins) if coins is not None else self.active
+        try:
+            rows = self._get("https://api.upbit.com/v1/orderbook", {"markets": ",".join(f"KRW-{c}" for c in coins)})
+        except FeedError:
+            if len(coins) <= len(self.base):
+                raise
+            # 코인 하나가 사라지면 요청 전체가 실패한다 → 목록을 다시 확인하고, 기본 코인만이라도 받아 #17·#18 을 살려 둔다
+            self.refresh_active()
+            coins = tuple(c for c in coins if c in self.active) or self.base
+            rows = self._get("https://api.upbit.com/v1/orderbook", {"markets": ",".join(f"KRW-{c}" for c in coins)})
         out = {}
         for r in rows:
             u = r["orderbook_units"]

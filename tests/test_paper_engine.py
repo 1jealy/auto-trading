@@ -121,3 +121,63 @@ def test_uptime_segments_join_only_when_close(paper_dir):
     store.heartbeat(1000, "a"); store.heartbeat(1010, "a"); store.heartbeat(2000, "a"); store.heartbeat(2030, "a")
     up = store.uptime("a")
     assert up["segments"] == 2 and up["seconds"] == pytest.approx(40)
+
+
+# ── 코인이 많을 때의 시세 받기 ──
+class _Resp:
+    def __init__(self, data, status=200):
+        self.data, self.status_code = data, status
+
+    def json(self):
+        return self.data
+
+
+class _Session:
+    def __init__(self, routes):
+        self.routes, self.calls = routes, []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append((url, params))
+        for key, fn in self.routes.items():
+            if key in url:
+                return fn(params)
+        return _Resp({}, 404)
+
+
+def test_feeds_bulk_okx_and_universe_filtering():
+    from autotrade.paper.feeds import Feeds, load_universe
+
+    uni = load_universe()
+    assert len(uni) > 100 and uni[:4] == ("BTC", "ETH", "XRP", "SOL") and len(set(uni)) == len(uni)
+    assert "USDC" not in uni
+    coins = ("BTC", "ETH", "XRP", "SOL") + tuple(f"C{i}" for i in range(10))
+    tickers = [{"instId": f"{c}-USDT-SWAP", "bidPx": "1", "askPx": "3"} for c in coins[:-1]]  # 마지막 코인은 선물 없음
+    tickers.append({"instId": "C5-USDT-SWAP", "bidPx": "", "askPx": ""})
+    tickers.append({"instId": "BTC-USD-SWAP", "bidPx": "9", "askPx": "9"})
+    sess = _Session({"okx.com/api/v5/market/tickers": lambda p: _Resp({"data": tickers})})
+    f = Feeds(coins=coins, session=sess)
+    mids = f.global_mids_for("okx_swap") if hasattr(f, "global_mids_for") else f._global("okx_swap")
+    assert len([c for c in sess.calls if "tickers" in c[0]]) == 1  # 코인이 많아도 한 번에
+    assert mids["BTC"] == 2.0 and "C9" not in mids and len(mids) == len(coins) - 1
+
+
+def test_feeds_upbit_falls_back_to_base_coins_when_a_market_disappears():
+    from autotrade.paper.feeds import Feeds
+
+    coins = ("BTC", "ETH", "XRP", "SOL", "GONE")
+
+    def ob(p):
+        if "KRW-GONE" in p["markets"]:
+            return _Resp({}, 404)
+        return _Resp([{"market": m, "timestamp": 0,
+                       "orderbook_units": [{"ask_price": 101, "ask_size": 1, "bid_price": 100, "bid_size": 1}]}
+                      for m in p["markets"].split(",")])
+
+    sess = _Session({"orderbook": ob, "market/all": lambda p: _Resp([{"market": f"KRW-{c}", "market_event": {"warning": False}}
+                                                                  for c in coins[:4]]),
+                     "okx.com": lambda p: _Resp({"data": [{"instId": f"{c}-USDT-SWAP", "bidPx": "1", "askPx": "2"}
+                                                         for c in coins]})})
+    f = Feeds(coins=coins, session=sess)
+    f.UPBIT_SPACING = 0.0
+    books = f.upbit_books()
+    assert set(books) == {"BTC", "ETH", "XRP", "SOL"} and "GONE" not in f.active

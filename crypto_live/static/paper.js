@@ -41,7 +41,7 @@ const SLOW_INFO = {
   c_etf5: { color: "--ink-3", dash: "12 3 2 3" },
   c_kodex: { color: "--ink-3", dash: "2 4" },
 };
-const SCALP_NAMES = { s17: "#17 틈 단타 (정식)", s18: "#18 비용을 넘는 틈만 자주" };
+const SCALP_NAMES = { s17: "#17 틈 단타 (정식)", s18: "#18 비용을 넘는 틈만 자주", s21: "#21 극도로 낮춘 단타 (코인 전부)" };
 
 /** 내용이 바뀐 부분만 다시 그린다 (2초마다 전체를 갈아 끼우면 깜빡이고 가리키던 곳이 풀린다) */
 function changed(key, value) {
@@ -76,8 +76,9 @@ function renderEngine(d) {
   ];
   $("eng-facts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
   const warn = [];
-  if (!e.official) warn.push(`OKX 선물에 연결되지 않아 <b>${esc(e.source_name)}</b> 가격으로 대신하고 있어요. 이 기록은 시험용이라 #17·#18 채점에 넣지 않습니다.`);
+  if (!e.official) warn.push(`OKX 선물에 연결되지 않아 <b>${esc(e.source_name)}</b> 가격으로 대신하고 있어요. 이 기록은 시험용이라 #17·#18·#21 채점에 넣지 않습니다.`);
   if (e.errors && e.errors.feed) warn.push(`시세를 받지 못하고 있어요: ${esc(e.errors.feed)}`);
+  if (e.errors && e.errors.feed_extra) warn.push(`#21 나머지 코인 호가창을 못 받고 있어요(기본 코인 기록은 계속): ${esc(e.errors.feed_extra)}`);
   $("eng-warn").hidden = !warn.length;
   $("eng-warn").innerHTML = warn.join("<br>");
   document.querySelectorAll("[data-source]").forEach((el) => { el.textContent = e.source_name; });
@@ -89,8 +90,9 @@ function renderEngine(d) {
 /* ── 대결 ── */
 function rankRows(d) {
   const rows = [];
-  for (const key of ["s18", "s17"]) {
+  for (const key of ["s21", "s18", "s17"]) {
     const s = d.scalp[key];
+    if (!s) continue;
     rows.push({ name: SCALP_NAMES[key], kind: "단타", control: false, value: s.value, ret: s.value / s.capital - 1,
       note: s.n ? `${num(s.n)}건` : "아직 거래 없음", started: s.n > 0 });
   }
@@ -180,13 +182,16 @@ function criteria(s, official) {
     <li class="check ${m}">${icon(m)}<div><p class="check-title">${t}</p><p class="check-detail">${v}</p></div></li>`).join("")}</ul>`;
 }
 function groupTable(title, groups) {
-  const keys = Object.keys(groups || {});
-  if (!keys.length) return "";
-  return `<div class="table-scroll"><table class="cost tbl-s"><thead><tr><th scope="col">${title}</th><th scope="col">횟수</th><th scope="col">건당 평균</th></tr></thead><tbody>${
-    keys.sort((a, b) => groups[b].n - groups[a].n).map((k) => `<tr><th scope="row">${esc(k)}</th><td>${num(groups[k].n)}</td><td data-dir="${dirOf(groups[k].mean)}">${pct(groups[k].mean, 3)}</td></tr>`).join("")}</tbody></table></div>`;
+  const all = Object.keys(groups || {});
+  if (!all.length) return "";
+  const keys = all.sort((a, b) => groups[b].n - groups[a].n).slice(0, 15);
+  const more = all.length > keys.length ? `<p class="fine-note">거래가 많은 ${keys.length}개만 보여요 (전체 ${all.length}개)</p>` : "";
+  return `${more}<div class="table-scroll"><table class="cost tbl-s"><thead><tr><th scope="col">${title}</th><th scope="col">횟수</th><th scope="col">건당 평균</th></tr></thead><tbody>${
+    keys.map((k) => `<tr><th scope="row">${esc(k)}</th><td>${num(groups[k].n)}</td><td data-dir="${dirOf(groups[k].mean)}">${pct(groups[k].mean, 3)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function renderScalp(d, key) {
   const s = d.scalp[key], box = document.querySelector(`.scalp-body[data-key="${key}"]`);
+  if (!s || !box) return;
   if (!changed(`scalp-${key}`, [s, d.engine.official])) return;
   const pnl = s.value - s.capital;
   const tiles = [
@@ -410,7 +415,7 @@ function tick() {
 function render(d) {
   S.data = d;
   renderEngine(d); renderRank(d); renderLive(d); renderRadar(d);
-  renderScalp(d, "s18"); renderScalp(d, "s17");
+  renderScalp(d, "s21"); renderScalp(d, "s18"); renderScalp(d, "s17");
   renderEquity(d); ["s13", "s14", "s12"].forEach((k) => renderSlowCard(d, k));
   renderCosts(d);
   renderNews(d);

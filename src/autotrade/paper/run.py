@@ -22,8 +22,8 @@ import pandas as pd
 from autotrade.data import Prices, load_prices
 from autotrade.paper import news, slow
 from autotrade.paper.book import round_trip_cost
-from autotrade.paper.feeds import COINS, SOURCE_NAMES, Feeds
-from autotrade.paper.scalp import ALWAYS, FORMAL, Scalper
+from autotrade.paper.feeds import COINS, SOURCE_NAMES, Feeds, load_universe
+from autotrade.paper.scalp import ALWAYS, EXTREME, FORMAL, Scalper
 from autotrade.paper.store import LIVE_PATH, OFFICIAL_SOURCE, SLOW_PATH, Store, write_json
 from autotrade.upbit import days_between
 
@@ -180,7 +180,7 @@ class Engine:
     def __init__(self, store: Store | None = None, feeds: Feeds | None = None, poll: float = 0.5,
                  slow_every: float = 600.0, cost_every: float = 60.0, force: bool = False) -> None:
         self.store = store or Store()
-        self.feeds = feeds or Feeds()
+        self.feeds = feeds or Feeds(coins=load_universe())
         self.poll, self.slow_every, self.cost_every = poll, slow_every, cost_every
         self.stop = threading.Event()
         self.scalper: Scalper | None = None
@@ -195,7 +195,7 @@ class Engine:
     def slow_loop(self) -> None:
         while not self.stop.is_set():
             try:
-                write_json(SLOW_PATH, compute_slow(Feeds(self.feeds.coins), self.store))
+                write_json(SLOW_PATH, compute_slow(Feeds(getattr(self.feeds, 'base', self.feeds.coins)), self.store))
             except Exception:  # noqa: BLE001
                 log("느린 전략 계산 실패:\n" + traceback.format_exc(limit=3))
             self.stop.wait(self.slow_every)
@@ -232,8 +232,14 @@ class Engine:
         source = self.feeds.pick_source()
         log(f"해외 가격 출처: {SOURCE_NAMES[source]}" + ("" if source == OFFICIAL_SOURCE else
                                                     " — OKX 선물에 연결되지 않아 대신 씀(정식 판정에서 제외되는 기록)"))
-        cash = {p.key: p.capital + self.store.realized(p.key) for p in (FORMAL, ALWAYS)}
-        self.scalper = Scalper(params=(FORMAL, ALWAYS), source=source, cash=cash)
+        params = (FORMAL, ALWAYS, EXTREME)
+        cash = {p.key: p.capital + self.store.realized(p.key) for p in params}
+        self.scalper = Scalper(params=params, source=source, cash=cash)
+        split = hasattr(self.feeds, "base")  # 코인이 많으면 기본 코인 호가창은 따로, 매번 받는다(#17·#18 의 0.2초 지연을 지키려고)
+        if split:
+            self.feeds.refresh_active()
+            log(f"#21 코인 {len(self.feeds.active)}개 중 기본 {len(self.feeds.base)}개는 매번, 나머지는 0.5초마다")
+        last_refresh = time.time()
         threading.Thread(target=self.slow_loop, daemon=True, name="paper-slow").start()
         threading.Thread(target=self.news_loop, daemon=True, name="paper-news").start()
 
@@ -250,8 +256,19 @@ class Engine:
             is_poll = now >= next_poll
             t_req = last_upbit = time.time()
             want_alt = self.scalper.alt_wanted(t_req)
+            f_ext = None
             try:
-                f_books = self.feeds.pool.submit(self.feeds.upbit_books)
+                if split:
+                    if t_req - last_refresh > 1800:
+                        last_refresh = t_req
+                        self.feeds.pool.submit(self.feeds.refresh_active)
+                    base = self.feeds.base
+                    extra = [c for c in self.feeds.active if c not in base] if is_poll else \
+                        sorted(self.scalper.due_coins(t_req) - set(base))
+                    f_books = self.feeds.pool.submit(self.feeds.upbit_books, base)
+                    f_ext = self.feeds.pool.submit(self.feeds.upbit_books, extra) if extra else None
+                else:
+                    f_books = self.feeds.pool.submit(self.feeds.upbit_books)
                 f_g = self.feeds.pool.submit(self.feeds.global_mids) if is_poll else None
                 f_alt = self.feeds.pool.submit(self.feeds.coinone_books, want_alt) if want_alt else None
                 books = f_books.result()
@@ -271,13 +288,21 @@ class Engine:
                 self._write_live(time.time())
                 continue
             self.loop_ms = (self.loop_ms + [(time.time() - t_req) * 1000])[-40:]
+            ext: dict = {}
+            if f_ext is not None:
+                try:
+                    ext = f_ext.result()
+                    self.errors.pop("feed_extra", None)
+                except Exception as e:  # noqa: BLE001  (나머지 코인이 실패해도 기본 코인 기록은 계속)
+                    self.errors["feed_extra"] = f"{type(e).__name__}: {str(e)[:100]}"
             for coin in self.feeds.coins:
-                if coin not in books:
+                bk = books.get(coin) or ext.get(coin)
+                if bk is None:
                     continue
                 if g is not None and coin in g:
-                    self.scalper.on_tick(t_req, coin, g[coin], books[coin], alt.get(coin))
+                    self.scalper.on_tick(t_req, coin, g[coin], bk, alt.get(coin))
                 else:
-                    self.scalper.on_book(t_req, coin, books[coin], alt.get(coin))
+                    self.scalper.on_book(t_req, coin, bk, alt.get(coin))
             if is_poll:
                 next_poll = max(next_poll + self.poll, time.time())
             for ev in self.scalper.drain():
@@ -297,14 +322,16 @@ class Engine:
         self._write_live(time.time(), stopped=True)
 
     def _log_costs(self, t: float, books: dict) -> None:
+        base = getattr(self.feeds, "base", self.feeds.coins)  # 호가 비용 기록은 기본 코인만
+
         def record(exchange: str, bs: dict) -> None:
             for coin, b in bs.items():
-                if b is not None and b.ok:
+                if coin in base and b is not None and b.ok:
                     self.store.add_cost(t, coin, exchange, b.spread, round_trip_cost(b, 1_000_000),
                                         round_trip_cost(b, 5_000_000), round_trip_cost(b, 10_000_000))
         record("upbit", books)
         try:
-            record("coinone", self.feeds.coinone_books(self.feeds.coins))
+            record("coinone", self.feeds.coinone_books(base))
         except Exception as e:  # noqa: BLE001
             self.errors["coinone"] = str(e)[:100]
 

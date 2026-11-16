@@ -247,3 +247,75 @@ def test_trades_with_signals_close_together_count_as_one_event(tmp_path):
     assert s["n"] == 5 and s["n_events"] == 2 and s["refills"] == 1
     assert s["mean_event"] == pytest.approx((0.01 - 0.002) / 2)
     assert store.realized("s18") == pytest.approx(0.04 * 1_000_000 - 2_000 + 10_000_000)
+
+
+# ── #21 (코인 전부, 낮은 기준) ──
+def test_base_params_ignore_other_coins_but_s21_trades_them():
+    from autotrade.paper.scalp import EXTREME
+
+    s = Scalper(params=(FORMAL, ALWAYS, EXTREME))
+    run_up(s, coin="DOGE", g0=100.0, g1=100.2)  # 해외 +0.2%, 업비트는 그대로
+    assert [e["key"] for e in s.entries] == ["s21"]  # s17·s18 은 기본 4코인만 본다
+    assert "DOGE" not in s.live and s.radars == []  # 화면 표·지연 관측도 기본 코인만
+
+
+def test_s21_has_no_spread_depth_or_cost_filter_but_needs_real_depth_to_fill():
+    from autotrade.paper.scalp import EXTREME
+
+    s = Scalper(params=(EXTREME,))
+    b = book(bid=99_000_000.0, ask=100_000_000.0, size_krw=1_000_000, tick=1000.0)  # 호가 차이 1%, 잔량 얇음
+    s.on_tick(0.0, "DOGE", 100.0, b)
+    s.on_tick(3.1, "DOGE", 100.08, b)  # +0.08% (기준 0.07% 이상)에서 신호
+    assert len(s.entries) == 1
+    thin = book(bid=99_000_000.0, ask=100_000_000.0, size_krw=10_000, tick=1000.0, levels=2)
+    s.on_book(3.4, "DOGE", thin)  # 지연 뒤 호가창 잔량이 모자라면 체결하지 않고 건너뜀
+    assert s.pos == {} and any(o["type"] == "skip" for o in s.out)
+
+
+def test_s21_exit_and_base_coins_unchanged_by_extra_coins():
+    from autotrade.paper.scalp import EXTREME
+
+    solo = Scalper(params=(ALWAYS,))
+    both = Scalper(params=(ALWAYS, EXTREME))
+    for s in (solo, both):
+        run_up(s, coin="BTC", g0=100.0, g1=100.2, bid=99_990_000.0, ask=100_000_000.0)
+    assert [e["key"] for e in solo.entries] == ["s18"]
+    assert sorted(e["key"] for e in both.entries) == ["s18", "s21"]
+    assert both.due_coins(10.0) == {"BTC"}
+    assert both.alt_wanted(10.0) == {"BTC"}
+
+
+def test_s21_cooldown_and_end_date():
+    from dataclasses import replace
+
+    from autotrade.paper.scalp import EXTREME
+
+    p = replace(EXTREME, cooldown=60.0, until=100.0)
+    s = Scalper(params=(p,))
+    b = book(bid=99_990_000.0, ask=100_000_000.0)
+
+    def signal(t0):
+        for i in range(7):
+            s.on_tick(t0 + i * 0.5, "DOGE", 100.0, b)
+        s.on_tick(t0 + 3.5, "DOGE", 100.2, b)
+
+    signal(0.0)
+    assert len(s.entries) == 1
+    s.on_book(3.8, "DOGE", b)  # 체결
+    assert ("s21", "DOGE") in s.pos
+    s.pos.clear()  # 팔렸다고 치고
+    signal(10.0)  # 산 지 60초 안 → 새로 안 삼
+    assert s.entries == []
+    signal(70.0)  # 60초 지남
+    assert len(s.entries) == 1
+    s.entries.clear()
+    signal(200.0)  # 정한 기간(until) 뒤 → 안 삼
+    assert s.entries == []
+
+
+def test_event_bucket_splits_continuous_signals():
+    from autotrade.paper.store import group_events
+
+    rows = [{"signal_t": 5.0 * i, "net_pct": 0.001} for i in range(60)]  # 5초마다 5분간 계속
+    assert len(group_events(rows)) == 1  # 이어 붙이면 하나
+    assert len(group_events(rows, 60.0)) == 5  # 60초 칸으로 나누면 5개

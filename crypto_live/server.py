@@ -229,7 +229,7 @@ class Handler(SimpleHTTPRequestHandler):
                         PAPER["summary"], PAPER["at"] = data, time.time()
                 return self._json(HTTPStatus.OK, PAPER["summary"])
             if what == "trades":
-                key = q.get("key") if q.get("key") in ("s17", "s18") else None
+                key = q.get("key") if q.get("key") in ("s17", "s18", "s21") else None
                 before = int(q["before"]) if q.get("before", "").isdigit() else None
                 limit = int(q["limit"]) if q.get("limit", "").isdigit() else 50
                 source = q.get("source") if re.fullmatch(r"[a-z_]{1,20}", q.get("source", "")) else None

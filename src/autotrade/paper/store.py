@@ -21,6 +21,7 @@ LIVE_PATH = DATA_DIR / "live.json"
 SLOW_PATH = DATA_DIR / "slow.json"
 KST = 9 * 3600
 OFFICIAL_SOURCE = "okx_swap"  # 2026-11-15 시작 전 바이낸스 선물에서 변경 (docs/experiments.md)
+EVENT_BUCKET = 60.0  # #21 은 신호가 끊임없이 이어져 이어 붙이기로는 사건이 안 나뉘므로, 신호 시각을 60초 칸으로 나눠 센다
 EVENT_GAP = 60.0  # 신호가 이 초 안에 이어지면 한 사건으로 묶는다(동시에 움직인 코인을 따로 세지 않게)
 
 SCHEMA = """
@@ -251,7 +252,7 @@ class Store:
         for r in rows:
             by_day.setdefault(kst_day(r["exit_t"]), []).append(r["net_pct"])
         # 채점은 '사건' 단위: 신호가 EVENT_GAP 초 안에 이어진 거래들은 하나로 묶어 평균 낸다
-        events = group_events(rows)
+        events = group_events(rows, EVENT_BUCKET if key == "s21" else None)
         ev_net = [e["net"] for e in events]
         ev_day: dict[str, list[float]] = {}
         for e in events:
@@ -356,12 +357,21 @@ class Store:
         return out
 
 
-def group_events(rows) -> list[dict]:
-    """신호 시각 순으로 정렬해, 직전 신호에서 EVENT_GAP 초 안이면 같은 사건으로 묶는다. 사건 값 = 묶인 거래 순수익의 평균."""
+def group_events(rows, bucket: float | None = None) -> list[dict]:
+    """신호 시각 순으로 정렬해, 직전 신호에서 EVENT_GAP 초 안이면 같은 사건으로 묶는다. 사건 값 = 묶인 거래 순수익의 평균.
+
+    bucket 을 주면(#21) 이어 붙이지 않고 신호 시각을 bucket 초 칸으로 나눠 한 칸을 한 사건으로 센다."""
     events: list[dict] = []
     last = None
+    cur = None
     for r in sorted(rows, key=lambda r: r["signal_t"]):
-        if last is None or r["signal_t"] - last > EVENT_GAP:
+        if bucket:
+            b = int(r["signal_t"] // bucket)
+            new = cur != b
+            cur = b
+        else:
+            new = last is None or r["signal_t"] - last > EVENT_GAP
+        if new:
             events.append({"t": r["signal_t"], "day": kst_day(r["signal_t"]), "nets": []})
         events[-1]["nets"].append(r["net_pct"])
         last = r["signal_t"]

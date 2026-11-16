@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from autotrade.paper.book import Book, market_buy, market_sell
 
 RADAR_OFFSETS = (0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0)
+BASE_COINS = ("BTC", "ETH", "XRP", "SOL")  # #17·#18 이 보는 코인. 지연 관측·호가 비용 기록·화면 표도 이 코인만.
 
 
 @dataclass(frozen=True)
@@ -35,12 +36,20 @@ class ScalpParams:
     fee: float = 0.0005  # 업비트 수수료(한쪽)
     latency: float = 0.2
     capital: float = 10_000_000
+    coins: tuple[str, ...] | None = BASE_COINS  # None 이면 엔진이 받는 모든 코인 (#21)
+    cooldown: float = 0.0  # 같은 코인에서 산 뒤 이 시간(초) 안에는 새로 사지 않는다 (#21: 신호가 끊임없이 나오는 것을 막음)
+    detail_levels: int = 5  # 감사 기록에 저장할 호가 칸 수 (#21 은 거래가 아주 많아 줄임)
+    until: float | None = None  # 이 시각(유닉스 초) 뒤에는 새로 사지 않는다 (#21: 정한 기간만 돌림)
 
 
 FORMAL = ScalpParams("s17", move=0.0035, lag=0.0020, amount=5_000_000, max_hold=60.0, need_tight_spread=True,
                      min_depth3=5_000_000, take=0.0025, stop=0.0030, origin_stop=True, catchup=True)
 ALWAYS = ScalpParams("s18", move=0.0015, lag=0.0, amount=1_000_000, max_hold=30.0, origin_stop=True, catchup=True,
                      cost_gap=0.0005, refill=True)
+# #21 "극도로 낮춘" 단타: 코인 전부, 호가 차이·잔량 조건 없음, 해외 3초 +0.07%, 업비트가 덜 오르기만 하면(뒤처짐 ≥ 0), 비용 조건 없음.
+# 예상은 탈락 — 거래를 많이 쌓아 어디에 비용을 넘는 틈이 있는지 보는 용도 (docs/experiments.md #21)
+EXTREME = ScalpParams("s21", move=0.0007, lag=0.0, amount=300_000, max_hold=30.0, origin_stop=True, catchup=True,
+                      refill=True, coins=None, cooldown=120.0, detail_levels=2, until=1795359600.0)  # 2026-11-23 00:00 KST 까지(1주)
 
 
 @dataclass
@@ -89,6 +98,7 @@ class Scalper:
         self.radars: list[dict] = []
         self.last_radar: dict[str, float] = {}
         self.last_skip: dict[tuple[str, str, str], float] = {}
+        self.last_entry: dict[tuple[str, str], float] = {}
         self.live: dict[str, dict] = {}
         self.out: list[dict] = []
 
@@ -116,7 +126,9 @@ class Scalper:
 
         live = {"t": t, "g": g, "ask": book.ask, "bid": book.bid, "spread": book.spread,
                 "one_tick": book.one_tick_spread(), "move": None, "u_move": None, "lag": None}
-        self.live[coin] = live
+        base = coin in BASE_COINS
+        if base:  # 화면의 '지금' 표는 기본 코인만
+            self.live[coin] = live
         if ref is None:
             return
         move = g / ref.g - 1
@@ -124,13 +136,19 @@ class Scalper:
         lag = move - u_move
         live.update(move=move, u_move=u_move, lag=lag)
 
-        if move >= self.radar_move and t - self.last_radar.get(coin, -1e18) >= self.radar_cooldown:
+        if base and move >= self.radar_move and t - self.last_radar.get(coin, -1e18) >= self.radar_cooldown:
             self.last_radar[coin] = t
             self.radars.append({"coin": coin, "t0": t, "move": move, "lag": lag, "ref_ask": ref.ask,
                                 "ask0": book.ask, "bid0": book.bid, "spread": book.spread,
                                 "points": [{"offset": o, "due": t + o, "at": None} for o in RADAR_OFFSETS]})
 
         for p in self.params.values():
+            if p.coins is not None and coin not in p.coins:
+                continue
+            if p.until is not None and t >= p.until:
+                continue
+            if p.cooldown and t - self.last_entry.get((p.key, coin), -1e18) < p.cooldown:
+                continue
             if (p.key, coin) in self.pos or any(e["key"] == p.key and e["coin"] == coin for e in self.entries):
                 continue
             if move < p.move or lag < p.lag:
@@ -149,7 +167,7 @@ class Scalper:
                 continue
             self.entries.append({"key": p.key, "coin": coin, "signal_t": t, "due": t + p.latency, "move": move,
                                  "lag": lag, "g_ref": ref.g, "u_ref": ref.ask, "g": g, "spread": book.spread,
-                                 "signal_book": book.top(3)})
+                                 "signal_book": book.top(min(3, p.detail_levels))})
 
     def on_book(self, t: float, coin: str, book: Book, alt: Book | None = None) -> None:
         """t 에 요청을 시작한 호가창. 지연이 지난(due ≤ t) 주문·관측만 처리한다."""
@@ -177,10 +195,16 @@ class Scalper:
         dues += [pt["due"] for r in self.radars for pt in r["points"] if pt["at"] is None]
         return min(dues) if dues else None
 
-    def alt_wanted(self, t: float) -> set[str]:
-        """t 시점에 체결될 주문이 있는 코인 (코인원 호가도 같이 받으면 비교 기록이 남는다)."""
+    def due_coins(self, t: float) -> set[str]:
+        """t 시점에 새 호가창이 필요한 코인 (지연이 지난 주문이 있는 코인, 모든 코인)."""
         return {e["coin"] for e in self.entries if e["due"] <= t} | \
                {c for (_, c), p in self.pos.items() if p.exit_due <= t}
+
+    def alt_wanted(self, t: float) -> set[str]:
+        """t 시점에 체결될 주문이 있는 코인 (코인원 호가도 같이 받으면 비교 기록이 남는다)."""
+        coins = {e["coin"] for e in self.entries if e["due"] <= t} | \
+                {c for (_, c), p in self.pos.items() if p.exit_due <= t}
+        return {c for c in coins if c in BASE_COINS}  # 코인원 비교는 기본 코인만
 
     def drain(self) -> list[dict]:
         out, self.out = self.out, []
@@ -229,7 +253,7 @@ class Scalper:
         pos = Position(p.key, e["coin"], e["signal_t"], t, buy.price, buy.qty, p.amount, e["g_ref"], e["u_ref"],
                        e["move"], e["lag"], exit_due=t + p.max_hold + p.latency)
         pos.detail = {"g_signal": e["g"], "g_ref": e["g_ref"], "u_ref": e["u_ref"], "spread_signal": e["spread"],
-                      "signal_book": e["signal_book"], "entry_book": book.top(5), "entry_mid": book.mid,
+                      "signal_book": e["signal_book"], "entry_book": book.top(p.detail_levels), "entry_mid": book.mid,
                       "entry_levels": buy.levels}
         if alt is not None and alt.ok:
             ab = market_buy(alt, p.amount)
@@ -237,6 +261,7 @@ class Scalper:
                 pos.alt_price, pos.alt_qty = ab.price, ab.qty
                 pos.detail["alt_entry_book"] = alt.top(3)
         self.pos[(p.key, e["coin"])] = pos
+        self.last_entry[(p.key, e["coin"])] = e["signal_t"]
 
     def _exit(self, t: float, key: str, pos: Position, book: Book, alt: Book | None) -> None:
         p = self.params[key]
@@ -258,7 +283,7 @@ class Scalper:
             "amount": pos.amount, "entry_price": pos.price, "exit_price": proceeds / pos.qty, "reason": pos.exit_reason,
             "gross_pct": proceeds / pos.amount - 1, "net_pct": net_krw / pos.amount, "net_krw": net_krw,
             "alt_net_pct": alt_net, "move": pos.move, "lag": pos.lag,
-            "detail": {**pos.detail, "exit_book": book.top(5), "exit_mid": book.mid, "exit_levels": sell.levels,
+            "detail": {**pos.detail, "exit_book": book.top(p.detail_levels), "exit_mid": book.mid, "exit_levels": sell.levels,
                        "exit_complete": sell.complete, "latency_in": pos.fill_t - pos.signal_t,
                        "latency_out": t - exit_signal, "alt_entry_price": pos.alt_price},
         })
