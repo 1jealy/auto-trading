@@ -6,6 +6,7 @@
 - 단타(#17·#18)와 지연 관측: 약 0.5초마다 해외 가격과 업비트 호가창을 받아 scalp.Scalper 에 넘긴다.
 - 호가 비용 기록: 1분마다 업비트·코인원 호가창에서 100만·500만·1,000만 원을 사자마자 팔 때 잃는 비율.
 - 느린 전략(#12·#13·#14)과 대조군: 10분마다 시작일 이후 시세로 다시 계산해 slow.json 에 쓴다.
+- #16 뉴스: 2분마다 RSS 를 받아 LLM 에 묻고(news.NewsWatcher), 10분마다 판정 계산을 news.json 에 쓴다.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from autotrade.data import Prices, load_prices
-from autotrade.paper import slow
+from autotrade.paper import news, slow
 from autotrade.paper.book import round_trip_cost
 from autotrade.paper.feeds import COINS, SOURCE_NAMES, Feeds
 from autotrade.paper.scalp import ALWAYS, FORMAL, Scalper
@@ -199,6 +200,34 @@ class Engine:
                 log("느린 전략 계산 실패:\n" + traceback.format_exc(limit=3))
             self.stop.wait(self.slow_every)
 
+    # #16 뉴스: 별도 스레드 (LLM 답을 기다리는 동안 단타가 멈추지 않게)
+    def news_loop(self) -> None:
+        if news.START is None:
+            return
+        watcher = news.NewsWatcher(self.store)
+        n = 0
+        while not self.stop.is_set():
+            done: dict = {}
+            try:
+                done = watcher.step()
+                if done.get("signals"):
+                    log(f"#16 뉴스 신호 {done['signals']}건")
+                self.errors.pop("news", None)
+                if watcher.last_errors:
+                    self.errors["news_rss"] = "; ".join(f"{k}: {v}" for k, v in watcher.last_errors.items())[:200]
+                else:
+                    self.errors.pop("news_rss", None)
+            except Exception as e:  # noqa: BLE001
+                self.errors["news"] = f"{type(e).__name__}: {str(e)[:150]}"
+                log("#16 뉴스 처리 실패:\n" + traceback.format_exc(limit=3))
+            if n % 5 == 0 or done.get("signals"):
+                try:
+                    write_json(news.NEWS_PATH, news.compute_summary(self.store))
+                except Exception:  # noqa: BLE001
+                    log("#16 판정 계산 실패:\n" + traceback.format_exc(limit=3))
+            n += 1
+            self.stop.wait(news.POLL)
+
     def run(self) -> None:
         source = self.feeds.pick_source()
         log(f"해외 가격 출처: {SOURCE_NAMES[source]}" + ("" if source == OFFICIAL_SOURCE else
@@ -206,6 +235,7 @@ class Engine:
         cash = {p.key: p.capital + self.store.realized(p.key) for p in (FORMAL, ALWAYS)}
         self.scalper = Scalper(params=(FORMAL, ALWAYS), source=source, cash=cash)
         threading.Thread(target=self.slow_loop, daemon=True, name="paper-slow").start()
+        threading.Thread(target=self.news_loop, daemon=True, name="paper-news").start()
 
         next_poll = time.time()
         last_upbit = last_beat = last_live = last_cost = 0.0

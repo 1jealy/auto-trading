@@ -370,6 +370,38 @@ function renderCosts(d) {
     <p class="fine-note">${num(Math.max(...d.costs.map((c) => c.n)))}번 잰 값의 가운데 값. 가정(0.20%)보다 큰 칸은 표시했어요. 업비트 수수료(왕복 0.10%)는 여기에 더해집니다.</p>`;
 }
 
+/* ── #16 뉴스 ── */
+const NEWS_SRC = { yna_economy: "연합 경제", yna_market: "연합 마켓", hk_finance: "한경 증권" };
+function renderNews(d) {
+  const n = d.news;
+  if (!changed("news", n)) return;
+  const box = $("news-body");
+  if (!n) { box.innerHTML = `<p class="empty">아직 시작 전이에요(규칙을 등록하는 날부터 기록)</p>`; return; }
+  const c = n.counts || {}, total = Object.values(c).reduce((a, b) => a + b, 0);
+  const asked = c.asked || 0, failed = c.failed || 0, cand = asked + failed + (c.candidate || 0);
+  const sim = n.sim;
+  const tiles = [
+    ["받은 기사", num(total), `회사 이름 든 기사 ${num(cand)}`],
+    ["LLM이 읽음", num(asked), failed ? `못 읽음 ${num(failed)} (한도·오류)` : "못 읽음 0"],
+    ["사는 신호", num(n.n_signals), `세기 ${4} 이상 · 새 소식`],
+    ["거래당 KODEX 200보다", sim && sim.trades ? `<span data-dir="${dirOf(sim.mean_excess)}">${pct(sim.mean_excess)}</span>` : "—",
+      sim && sim.trades ? `거래 ${num(sim.trades)}번${sim.open ? ` (보유 중 ${sim.open})` : ""} · t ${sim.t == null ? "—" : sim.t.toFixed(2)}` : "판정: 6개월 뒤"],
+  ];
+  const a = n.asks || {};
+  const errLine = a.last_error && a.last_error.t_ask > n.t - 3600
+    ? `<p class="warn-line">최근 LLM 오류: ${esc(a.last_error.error || "")} (${clock(a.last_error.t_ask, true)})</p>` : "";
+  const rows = (n.recent || []).slice(0, 15).map((r) => {
+    const tag = r.signal ? `<b class="sig">신호</b>` : `<span class="muted">${esc(r.why_not || "")}</span>`;
+    return `<li class="tl ${r.signal ? "buy" : ""}"><span class="when">${clock(r.t_answer, true).slice(0, -3)} · ${esc(NEWS_SRC[r.source] || r.source)}</span>
+      <span class="what"><a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title)}</a></span>
+      <span class="what">세기 ${r.strength} · ${tag}${r.reason ? ` · ${esc(r.reason)}` : ""}</span></li>`;
+  }).join("");
+  box.innerHTML = `<div class="tiles">${tiles.map(([l, v, sub]) => `<div class="tile"><span class="tile-label">${esc(l)}</span><b>${v}</b><small>${sub}</small></div>`).join("")}</div>
+    <p class="fine-note">모델 ${esc(n.model || "—")} · 최근 24시간 LLM 호출 ${num(a.calls)}번(기사 ${num(a.items)}건) · 계산 ${clock(n.t, true).slice(0, -3)}</p>${errLine}
+    <h3 class="mini-title">최근 LLM 판단</h3>
+    ${rows ? `<ol class="timeline short">${rows}</ol>` : `<p class="empty">회사 이름이 든 새 기사가 나오면 여기에 쌓여요</p>`}`;
+}
+
 /* ── 돌리기 ── */
 function tick() {
   const now = Date.now() / 1000;
@@ -381,6 +413,7 @@ function render(d) {
   renderScalp(d, "s18"); renderScalp(d, "s17");
   renderEquity(d); ["s13", "s14", "s12"].forEach((k) => renderSlowCard(d, k));
   renderCosts(d);
+  renderNews(d);
 }
 async function poll() {
   try {

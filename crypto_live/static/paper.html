@@ -60,7 +60,7 @@
     <a href="#sec-scalp">단타</a>
     <a href="#sec-slow">느린 전략</a>
     <a href="#sec-cost">호가 비용</a>
-    <a href="#sec-todo">준비 중</a>
+    <a href="#sec-news">뉴스</a>
   </nav>
 
   <main class="paper-layout" id="main">
@@ -150,25 +150,12 @@
       <div class="table-scroll" id="cost-table"><p class="empty">엔진이 1분 넘게 켜져 있으면 쌓여요</p></div>
     </section>
 
-    <!-- 준비 중 -->
-    <h2 class="sec-title" id="sec-todo">준비 중 <small>아직 시작하지 않은 실험</small></h2>
-    <section class="card todo-card">
-      <h2 class="card-title">#15 DART 숫자 공시 스윙</h2>
-      <p class="card-sub">큰 공급계약·자사주 소각·실적 급증 공시가 난 종목을 다음 날 아침에 사서 10거래일 보유</p>
-      <ul class="todo">
-        <li>DART API 키 발급 (opendart.fss.or.kr, 무료) → <code>.env</code>의 <code>DART_API_KEY</code></li>
-        <li>공시 문서 안의 표를 읽는 코드 (LLM 없이 규칙으로)</li>
-        <li>상장폐지 종목을 포함한 과거 백테스트 먼저</li>
-      </ul>
-    </section>
-    <section class="card todo-card">
-      <h2 class="card-title">#16 LLM 뉴스 스윙</h2>
-      <p class="card-sub">새로운 호재 기사만 골라 5거래일 보유. 과거 시험은 못 하고 모의 기록으로만 판단</p>
-      <ul class="todo">
-        <li>뉴스를 어디서 받을지 결정 (이용 약관 확인)</li>
-        <li>LLM 키와 비용 결정, 질문 문장·모델을 시작 날 고정</li>
-        <li>비슷한 기사 묶는 규칙</li>
-      </ul>
+    <!-- #16 뉴스 -->
+    <h2 class="sec-title" id="sec-news">뉴스 <small>2분마다 기사 확인 · LLM이 새 호재만 골라 5거래일 보유</small></h2>
+    <section class="card news-card" id="news-card" aria-labelledby="news-heading">
+      <div class="card-head"><h2 class="card-title" id="news-heading">#16 LLM 뉴스 스윙</h2></div>
+      <p class="card-sub">연합뉴스·한국경제 기사 중 상장 회사 이름이 든 것을 Claude Haiku가 읽고, '새로운 호재, 세기 4 이상'이면 08:50 전은 그날·그 뒤는 다음 거래일 시가에 사서 5거래일 보유합니다. 과거 시험 없이 모의 기록으로만 판정해요.</p>
+      <div id="news-body"><p class="empty">엔진이 한 번 확인하면 보여요</p></div>
     </section>
   </main>
 

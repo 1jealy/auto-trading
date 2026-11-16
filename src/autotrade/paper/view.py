@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from autotrade.paper.feeds import SOURCE_NAMES
+from autotrade.paper.news import NEWS_PATH
 from autotrade.paper.scalp import ALWAYS, FORMAL
 from autotrade.paper.store import LIVE_PATH, OFFICIAL_SOURCE, SLOW_PATH, Store, read_json
 
@@ -40,4 +41,5 @@ def build_summary(store: Store, now: float | None = None) -> dict:
         "costs": store.cost_summary(now - 7 * 86400),
         "skips": store.skips(source, 20),
         "slow": read_json(SLOW_PATH),
+        "news": read_json(NEWS_PATH),
     }

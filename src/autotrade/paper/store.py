@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS uptime (id INTEGER PRIMARY KEY, start REAL, last REAL
 CREATE TABLE IF NOT EXISTS refills (id INTEGER PRIMARY KEY, key TEXT, source TEXT, t REAL, amount REAL);
 CREATE TABLE IF NOT EXISTS funding (t REAL PRIMARY KEY, rate REAL, source TEXT);
 CREATE TABLE IF NOT EXISTS decisions (key TEXT, day TEXT, weights TEXT, first_seen REAL, PRIMARY KEY (key, day));
+CREATE TABLE IF NOT EXISTS news (link TEXT PRIMARY KEY, source TEXT, title TEXT, summary TEXT, published REAL,
+  fetched REAL, status TEXT, candidates TEXT);
+CREATE INDEX IF NOT EXISTS news_fetched ON news(fetched);
+CREATE TABLE IF NOT EXISTS news_asks (id INTEGER PRIMARY KEY, t_ask REAL, t_answer REAL, model TEXT, n INTEGER,
+  ok INTEGER, error TEXT, raw TEXT, cost REAL);
+CREATE TABLE IF NOT EXISTS news_answers (link TEXT PRIMARY KEY, ask_id INTEGER, code TEXT, positive_new INTEGER,
+  strength INTEGER, reason TEXT, signal INTEGER, why_not TEXT, t_answer REAL, answer TEXT);
 """
 
 
@@ -140,6 +147,80 @@ class Store:
         return {"n": len(saved) + len(new), "changed": changed}
 
     # ── 읽기 (화면) ──
+    # ── #16 뉴스 ──
+    def news_add(self, items: list[dict]) -> list[dict]:
+        """처음 보는 기사만 저장하고 돌려준다(링크 기준)."""
+        new = []
+        with self.lock:
+            for n in items:
+                cur = self.db.execute(
+                    "INSERT OR IGNORE INTO news (link, source, title, summary, published, fetched, status) "
+                    "VALUES (?,?,?,?,?,?, 'new')",
+                    (n["link"], n["source"], n["title"], n.get("summary", ""), n.get("published"), n["fetched"]))
+                if cur.rowcount:
+                    new.append(dict(n))
+            self.db.commit()
+        return new
+
+    def news_mark(self, link: str, status: str, candidates) -> None:
+        with self.lock:
+            self.db.execute("UPDATE news SET status=?, candidates=? WHERE link=?",
+                            (status, json.dumps(candidates, ensure_ascii=False), link))
+            self.db.commit()
+
+    def news_ask(self, t_ask, t_answer, model, n, ok, error, raw, cost) -> int:
+        with self.lock:
+            cur = self.db.execute(
+                "INSERT INTO news_asks (t_ask, t_answer, model, n, ok, error, raw, cost) VALUES (?,?,?,?,?,?,?,?)",
+                (t_ask, t_answer, model, n, int(ok), error, raw, cost))
+            self.db.commit()
+            return int(cur.lastrowid)
+
+    def news_answer(self, link, ask_id, code, answer: dict, signal: bool, why_not: str, t_answer: float) -> None:
+        with self.lock:
+            self.db.execute(
+                "INSERT OR REPLACE INTO news_answers (link, ask_id, code, positive_new, strength, reason, signal, why_not, "
+                "t_answer, answer) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (link, ask_id, code, int(bool(answer.get("positive_new"))), int(answer.get("strength") or 0),
+                 str(answer.get("reason", ""))[:200], int(signal), why_not, t_answer,
+                 json.dumps(answer, ensure_ascii=False)))
+            self.db.commit()
+
+    def news_recent_titles(self, code: str, since: float, exclude_link: str) -> list[str]:
+        """since 이후 받은 기사 중 후보에 code 가 든 기사 제목(자기 자신 제외)."""
+        rows = self._rows("SELECT link, title, candidates FROM news WHERE fetched >= ? AND link != ?",
+                          (since, exclude_link))
+        out = []
+        for r in rows:
+            try:
+                if any(c[0] == code for c in json.loads(r["candidates"] or "[]")):
+                    out.append(r["title"])
+            except (ValueError, TypeError, IndexError):
+                pass
+        return out
+
+    def news_signals(self) -> list[dict]:
+        return [dict(r) for r in self._rows(
+            "SELECT a.link, a.code, a.strength, a.reason, a.t_answer, n.title, n.source FROM news_answers a "
+            "JOIN news n ON n.link = a.link WHERE a.signal = 1 ORDER BY a.t_answer")]
+
+    def news_counts(self) -> dict:
+        rows = self._rows("SELECT status, COUNT(*) AS n FROM news GROUP BY status")
+        return {r["status"]: r["n"] for r in rows}
+
+    def news_recent(self, limit: int = 30) -> list[dict]:
+        return [dict(r) for r in self._rows(
+            "SELECT n.title, n.source, n.link, n.fetched, a.code, a.strength, a.positive_new, a.signal, a.why_not, "
+            "a.reason, a.t_answer FROM news_answers a JOIN news n ON n.link = a.link ORDER BY a.t_answer DESC LIMIT ?",
+            (limit,))]
+
+    def news_ask_stats(self, since: float) -> dict:
+        r = self._rows("SELECT COUNT(*) AS calls, SUM(ok) AS ok, SUM(n) AS items, MAX(t_answer) AS last "
+                       "FROM news_asks WHERE t_ask >= ?", (since,))[0]
+        err = self._rows("SELECT error, t_ask FROM news_asks WHERE ok = 0 ORDER BY id DESC LIMIT 1")
+        return {"calls": r["calls"] or 0, "ok": r["ok"] or 0, "items": r["items"] or 0, "last": r["last"],
+                "last_error": dict(err[0]) if err else None}
+
     def _rows(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self.lock:
             return self.db.execute(sql, args).fetchall()

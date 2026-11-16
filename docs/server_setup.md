@@ -63,6 +63,28 @@ curl -fsSL https://raw.githubusercontent.com/1jealy/auto-trading/main/deploy/ins
 - 접속 코드를 바꾸려면 `rm ~/auto-trading/crypto_live/.pin && sudo systemctl restart coin-monitor` 뒤 `status.sh`.
 - 기록(`data/paper/`)은 그 서버에만 있습니다. 가끔 백업하세요.
 
+## #16 뉴스 실험 준비 (Claude Code 로그인, 한 번만)
+
+#16은 서버에서 Claude Code(구독 로그인, Haiku)를 불러 기사를 읽습니다. 사용자가 고른 방식이라 추가 비용은 없지만,
+**평소 Claude 사용 한도를 함께 씁니다**(하루 수십 번, 한 번에 기사 최대 25건을 묶어 보냄).
+
+1. **내 컴퓨터(브라우저 있는 곳)** 에서 Claude Code 를 열고 `claude setup-token` → 화면에 나오는 1년짜리 토큰을 복사.
+   (토큰은 비밀번호와 같습니다. 채팅·커밋에 붙여 넣지 마세요.)
+2. **서버에서:**
+   ```bash
+   curl -fsSL https://claude.ai/install.sh | bash          # Claude Code 설치 (~/.local/bin/claude)
+   nano ~/auto-trading/.env                                 # 아래 한 줄 넣고 저장
+   #   CLAUDE_CODE_OAUTH_TOKEN=복사한토큰
+   chmod 600 ~/auto-trading/.env
+   ```
+   `.env`에 `ANTHROPIC_API_KEY`가 있어도 엔진은 그 키를 쓰지 않고 구독 로그인으로 부릅니다.
+3. 서비스가 `.env`를 읽게 하기 — `deploy/install.sh`를 다시 실행하거나, 이미 설치한 서버라면:
+   ```bash
+   sudo sed -i '/^Environment=PYTHONUNBUFFERED=1/a EnvironmentFile=-/home/ubuntu/auto-trading/.env' /etc/systemd/system/coin-monitor.service
+   sudo systemctl daemon-reload && sudo systemctl restart coin-monitor
+   ```
+4. 확인: 모의 투자 화면 맨 아래 **#16 LLM 뉴스 스윙** 카드에 'LLM이 읽음' 숫자가 늘면 정상. 오류가 나면 카드에 빨간 줄로 나옵니다.
+
 ## 보안
 
 - 화면 서버는 `--public` 모드로 돌아갑니다: 서버 안(127.0.0.1)에서만 듣고, **모든 접속에 12자리 접속 코드**를 묻고,

@@ -66,6 +66,7 @@ Wants=network-online.target
 User=$USER_NAME
 WorkingDirectory=$DIR
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-$DIR/.env
 ExecStart=$DIR/.venv/bin/python crypto_live/server.py $PORT --public --engine
 Restart=always
 RestartSec=5

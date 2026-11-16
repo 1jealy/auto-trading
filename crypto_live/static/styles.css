@@ -735,7 +735,10 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 .paper-layout > .card { grid-column: span 6; scroll-margin-top: 76px; }
 .paper-layout > .engine-card { grid-column: span 5; }
 .paper-layout > .rank-card { grid-column: span 7; }
-.paper-layout > .slow-chart-card, .paper-layout > .cost-card, .paper-layout > .slow-card.wide { grid-column: span 12; }
+.paper-layout > .slow-chart-card, .paper-layout > .cost-card, .paper-layout > .slow-card.wide, .paper-layout > .news-card { grid-column: span 12; }
+.news-card .sig { color: var(--up); }
+.news-card .what a { color: var(--ink); text-decoration: none; }
+.news-card .what a:hover { text-decoration: underline; }
 .sec-title { grid-column: 1 / -1; margin: 14px 0 -6px; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; scroll-margin-top: 76px; }
 .sec-title small { margin-left: 8px; font-size: 13px; }
 
@@ -826,7 +829,7 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 @media (max-width: 760px) {
   .paper-layout { grid-template-columns: 1fr; gap: 12px; padding: 10px 16px 16px; }
   .paper-layout > .card, .paper-layout > .engine-card, .paper-layout > .rank-card, .paper-layout > .slow-chart-card,
-  .paper-layout > .cost-card, .paper-layout > .slow-card.wide { grid-column: auto; }
+  .paper-layout > .cost-card, .paper-layout > .slow-card.wide, .paper-layout > .news-card { grid-column: auto; }
   .jump { padding: 0 12px; }
   .tl { grid-template-columns: 1fr; gap: 2px; }
   .trade { grid-template-columns: 1fr auto; }
