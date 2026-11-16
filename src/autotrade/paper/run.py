@@ -23,7 +23,7 @@ from autotrade.data import Prices, load_prices
 from autotrade.paper import news, slow
 from autotrade.paper.book import round_trip_cost
 from autotrade.paper.feeds import COINS, SOURCE_NAMES, Feeds, load_universe
-from autotrade.paper.scalp import ALWAYS, EXTREME, FORMAL, Scalper
+from autotrade.paper.scalp import ALWAYS, EXTREME, EXTREME_ON, FORMAL, Scalper
 from autotrade.paper.store import LIVE_PATH, OFFICIAL_SOURCE, SLOW_PATH, Store, write_json
 from autotrade.upbit import days_between
 
@@ -180,7 +180,7 @@ class Engine:
     def __init__(self, store: Store | None = None, feeds: Feeds | None = None, poll: float = 0.5,
                  slow_every: float = 600.0, cost_every: float = 60.0, force: bool = False) -> None:
         self.store = store or Store()
-        self.feeds = feeds or Feeds(coins=load_universe())
+        self.feeds = feeds or Feeds(coins=load_universe() if EXTREME_ON else COINS)
         self.poll, self.slow_every, self.cost_every = poll, slow_every, cost_every
         self.stop = threading.Event()
         self.scalper: Scalper | None = None
@@ -232,13 +232,14 @@ class Engine:
         source = self.feeds.pick_source()
         log(f"해외 가격 출처: {SOURCE_NAMES[source]}" + ("" if source == OFFICIAL_SOURCE else
                                                     " — OKX 선물에 연결되지 않아 대신 씀(정식 판정에서 제외되는 기록)"))
-        params = (FORMAL, ALWAYS, EXTREME)
+        params = (FORMAL, ALWAYS, EXTREME) if EXTREME_ON else (FORMAL, ALWAYS)
         cash = {p.key: p.capital + self.store.realized(p.key) for p in params}
         self.scalper = Scalper(params=params, source=source, cash=cash)
         split = hasattr(self.feeds, "base")  # 코인이 많으면 기본 코인 호가창은 따로, 매번 받는다(#17·#18 의 0.2초 지연을 지키려고)
         if split:
             self.feeds.refresh_active()
-            log(f"#21 코인 {len(self.feeds.active)}개 중 기본 {len(self.feeds.base)}개는 매번, 나머지는 0.5초마다")
+            if EXTREME_ON:
+                log(f"#21 코인 {len(self.feeds.active)}개 중 기본 {len(self.feeds.base)}개는 매번, 나머지는 0.5초마다")
         last_refresh = time.time()
         threading.Thread(target=self.slow_loop, daemon=True, name="paper-slow").start()
         threading.Thread(target=self.news_loop, daemon=True, name="paper-news").start()

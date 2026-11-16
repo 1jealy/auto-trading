@@ -47,6 +47,7 @@ FORMAL = ScalpParams("s17", move=0.0035, lag=0.0020, amount=5_000_000, max_hold=
 ALWAYS = ScalpParams("s18", move=0.0015, lag=0.0, amount=1_000_000, max_hold=30.0, origin_stop=True, catchup=True,
                      cost_gap=0.0005, refill=True)
 # #21 "극도로 낮춘" 단타: 코인 전부, 호가 차이·잔량 조건 없음, 해외 3초 +0.07%, 업비트가 덜 오르기만 하면(뒤처짐 ≥ 0), 비용 조건 없음.
+EXTREME_ON = False  # #21 은 2026-11-16 시작 전에 취소(사용자가 #22 로 대체). 켜려면 True 로 하고 docs 에 다시 등록할 것
 # 예상은 탈락 — 거래를 많이 쌓아 어디에 비용을 넘는 틈이 있는지 보는 용도 (docs/experiments.md #21)
 EXTREME = ScalpParams("s21", move=0.0007, lag=0.0, amount=300_000, max_hold=30.0, origin_stop=True, catchup=True,
                       refill=True, coins=None, cooldown=120.0, detail_levels=2, until=1795359600.0)  # 2026-11-23 00:00 KST 까지(1주)

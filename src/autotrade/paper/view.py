@@ -6,7 +6,7 @@ import time
 
 from autotrade.paper.feeds import SOURCE_NAMES
 from autotrade.paper.news import NEWS_PATH
-from autotrade.paper.scalp import ALWAYS, EXTREME, FORMAL
+from autotrade.paper.scalp import ALWAYS, EXTREME, EXTREME_ON, FORMAL
 from autotrade.paper.store import LIVE_PATH, OFFICIAL_SOURCE, SLOW_PATH, Store, read_json
 
 RULES = {
@@ -37,7 +37,7 @@ def build_summary(store: Store, now: float | None = None) -> dict:
     sources = store.sources()
     source = (live or {}).get("source") or (sources[0] if sources else OFFICIAL_SOURCE)
     scalp = {}
-    for p in (FORMAL, ALWAYS, EXTREME):
+    for p in ((FORMAL, ALWAYS, EXTREME) if EXTREME_ON else (FORMAL, ALWAYS)):
         s = _scalp(store, p, source, now)
         s["rules"] = RULES[p.key]
         scalp[p.key] = s

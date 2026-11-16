@@ -415,6 +415,7 @@ function tick() {
 function render(d) {
   S.data = d;
   renderEngine(d); renderRank(d); renderLive(d); renderRadar(d);
+  $("card-s21").hidden = !d.scalp.s21;  // #21 은 취소됨 — 켜져 있을 때만 보임
   renderScalp(d, "s21"); renderScalp(d, "s18"); renderScalp(d, "s17");
   renderEquity(d); ["s13", "s14", "s12"].forEach((k) => renderSlowCard(d, k));
   renderCosts(d);
