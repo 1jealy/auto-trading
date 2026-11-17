@@ -216,7 +216,8 @@ def show_sim(rows: list[dict], seconds: float, odd: int | None = None) -> None:
     for r in sim_report(rows, seconds):
         f = lambda v, p=3: "   —  " if v is None else f"{v * 100:+.{p}f}%"  # noqa: E731
         top = ", ".join(f"{c} {v * 100:+.2f}%" for c, v in r["top"])
-        print(f"{r['key']:16s} {r['filled']:5d} {r['failed']:5d} {r['per_hour']:6.1f} {('—' if r['win'] is None else f'{r['win']:.0%}'):>7s} "
+        win = "—" if r["win"] is None else f"{r['win']:.0%}"
+        print(f"{r['key']:16s} {r['filled']:5d} {r['failed']:5d} {r['per_hour']:6.1f} {win:>7s} "
               f"{f(r['mean_signal']):>8s} {f(r['mean_net']):>8s} {r['total_krw']:>10,.0f} {r['coins']:3d} · {top}")
     if odd is not None:
         print(f"수수료 전 3% 넘는 이상한 차이를 본 횟수(거래 안 함): {odd:,}")
