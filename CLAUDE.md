@@ -16,6 +16,7 @@
 - `crypto_live/` — 코인 모니터(시세·모의 투자 화면). `코인시세.bat` 이 화면 서버와 모의 투자 엔진을 함께 켠다
 - `src/autotrade/lots.py` — #22(탈락)·#23(통과, 약함) 덩이 매수·익절·손절·추적 손절 계산(백테스트). `scripts/exp23_adaptive.py`. 자료는 `scripts/exp22_lots.py` 가 `data/cache/exp22/`에 받는다
 - `src/autotrade/arb.py`·`scripts/obs_arbitrage.py` — 국내 거래소 차익 틈 관찰·모의 체결(웹소켓, 주문 없음). `python scripts/obs_arbitrage.py run --minutes 60`, 서버는 `server.py --arb` 로 함께 돌리고 `/arb` 에서 봄(`arb_view.py`)
+- `src/autotrade/public_rules.py`·`scripts/exp24_public.py` — #24~#27 공개 자동매매 규칙 4개(변동성 돌파 등) 검증, 넷 다 탈락
 - `src/autotrade/stock_arb.py`·`scripts/obs_stock_arb.py` — 주식 차익 틈 관찰(KRX vs NXT, 같은 지수 ETF 짝). 한투 실시간 호가, `.env` 키 필요, 주문 없음
 - `src/autotrade/dart.py`·`event_swing.py` — #15 공시 받기·표 읽기, 공시 뒤 N일 보유 계산. 받은 공시는 `data/cache/dart/`(Git 제외)
 - `docs/plan.md` — 앞으로의 계획(#12~#18)과 고친 이유. 정확한 규칙은 `docs/experiments.md`
