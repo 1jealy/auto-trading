@@ -1,6 +1,6 @@
 """차익 모의 체결(시험 가동) 결과를 실시간으로 보는 작은 화면. 기록(arb.db)을 읽기만 한다.
 
-    python scripts/arb_live.py 8770        # http://127.0.0.1:8770  (5초마다 새로 고침)
+    python scripts/arb_live.py 8770        # http://127.0.0.1:8770  (1초마다 새로 고침)
 """
 from __future__ import annotations
 

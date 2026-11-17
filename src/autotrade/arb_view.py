@@ -63,7 +63,7 @@ def page() -> str:
     else:
         head, body = "아직 기록이 없어요", ""
     return (f"<!doctype html><html lang='ko'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<meta http-equiv='refresh' content='5'><title>차익 모의 체결</title><style>{CSS}</style></head><body><main>"
-            f"<h1>국내 거래소 차익 — 모의 체결 (시험 가동)</h1><p>{head} · 5초마다 새로 고침 · 화면 시각 {time.strftime('%H:%M:%S')}</p>"
+            f"<meta http-equiv='refresh' content='1'><title>차익 모의 체결</title><style>{CSS}</style></head><body><main>"
+            f"<h1>국내 거래소 차익 — 모의 체결 (시험 가동)</h1><p>{head} · 1초마다 새로 고침 · 화면 시각 {time.strftime('%H:%M:%S')}</p>"
             f"<p>50만 원씩, 신호 뒤 '지연' 시간이 지난 호가로 양쪽을 체결했다고 계산. 주문은 내지 않아요. 수수료는 가정치(일반: 업비트 0.05%·빗썸 0.25%·코인원·코빗 0.20% / 할인: 모두 0.05%).</p>"
             f"{body}</main></body></html>")
