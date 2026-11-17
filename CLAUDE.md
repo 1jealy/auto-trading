@@ -15,6 +15,7 @@
 - `src/autotrade/paper/` — 모의 투자(포워드 테스트) 엔진. 공개 시세만 읽고 가짜 체결을 기록한다(주문 기능 없음)
 - `crypto_live/` — 코인 모니터(시세·모의 투자 화면). `코인시세.bat` 이 화면 서버와 모의 투자 엔진을 함께 켠다
 - `src/autotrade/lots.py` — #22(탈락)·#23(통과, 약함) 덩이 매수·익절·손절·추적 손절 계산(백테스트). `scripts/exp23_adaptive.py`. 자료는 `scripts/exp22_lots.py` 가 `data/cache/exp22/`에 받는다
+- `src/autotrade/arb.py`·`scripts/obs_arbitrage.py` — 국내 거래소 차익 틈 관찰 도구(웹소켓, 주문 없음). `python scripts/obs_arbitrage.py run --minutes 60`
 - `src/autotrade/dart.py`·`event_swing.py` — #15 공시 받기·표 읽기, 공시 뒤 N일 보유 계산. 받은 공시는 `data/cache/dart/`(Git 제외)
 - `docs/plan.md` — 앞으로의 계획(#12~#18)과 고친 이유. 정확한 규칙은 `docs/experiments.md`
 
