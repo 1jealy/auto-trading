@@ -85,6 +85,19 @@ curl -fsSL https://raw.githubusercontent.com/1jealy/auto-trading/main/deploy/ins
    ```
 4. 확인: 모의 투자 화면 맨 아래 **#16 LLM 뉴스 스윙** 카드에 'LLM이 읽음' 숫자가 늘면 정상. 오류가 나면 카드에 빨간 줄로 나옵니다.
 
+## 차익 관찰 화면 켜기 (/arb)
+
+국내 거래소 4곳(업비트·빗썸·코인원·코빗)의 호가를 받아 차익 틈과 모의 체결을 기록하고, **서버 주소 뒤에 `/arb`** 를 붙이면 결과가 보입니다
+(예: `https://….trycloudflare.com/arb`, 모의 투자 화면의 '차익' 링크). 접속 코드가 있어야 열립니다. 주문은 내지 않습니다.
+
+이미 설치한 서버에서는 한 번만:
+```bash
+cd ~/auto-trading && git pull && .venv/bin/pip install -q -e .        # websockets 설치
+sudo sed -i 's/--public --engine$/--public --engine --arb/' /etc/systemd/system/coin-monitor.service
+sudo systemctl daemon-reload && sudo systemctl restart coin-monitor
+```
+기록은 `data/paper/arb.db`에 쌓입니다. 끄려면 위 줄에서 `--arb`를 지우고 다시 시작합니다.
+
 ## 보안
 
 - 화면 서버는 `--public` 모드로 돌아갑니다: 서버 안(127.0.0.1)에서만 듣고, **모든 접속에 12자리 접속 코드**를 묻고,

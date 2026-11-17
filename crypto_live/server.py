@@ -15,6 +15,7 @@
   접속 코드는 환경 변수 CRYPTO_LIVE_PIN 으로 정할 수 있다(다시 시작해도 같은 코드).
 - /api/paper/*: 모의 투자 기록(data/paper/)을 읽어 보여 준다. --engine 을 붙이면 모의 투자 엔진(src/autotrade/paper)도
   이 창 안에서 함께 돈다. 엔진은 공개 시세만 읽고 주문은 내지 않는다.
+- --arb: 국내 거래소 차익 관찰(scripts/obs_arbitrage.py)도 함께 돌리고 /arb 에서 결과를 보여 준다(접속 코드 필요).
 """
 
 from __future__ import annotations
@@ -188,6 +189,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/":
             return self._redirect("/paper.html")
+        if path in ("/arb", "/arb.html"):
+            return self._arb()
         if path == "/api/account":
             return self._account()
         if path == "/api/server":
@@ -215,6 +218,22 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(HTTPStatus.NOT_FOUND, {"error": "계좌 파일이 없습니다"})
 
     # ── 모의 투자 기록 (읽기 전용) ──
+    def _arb(self):
+        """국내 거래소 차익 모의 체결(시험 가동) 화면. 접속 코드 뒤에 있다(_guard)."""
+        try:
+            paper_store()  # src 경로 준비
+            from autotrade.arb_view import page
+
+            body, code = page().encode(), HTTPStatus.OK
+        except Exception as e:  # noqa: BLE001
+            body, code = f"차익 기록을 읽지 못했습니다: {e}".encode(), HTTPStatus.INTERNAL_SERVER_ERROR
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _paper(self, what: str, q: dict):
         try:
             store = paper_store()
@@ -305,6 +324,16 @@ def main():
             print("모의 투자 엔진: 켜짐 (가짜 돈, 주문 없음). 이 창을 닫으면 단타 기록도 멈춥니다.", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"모의 투자 엔진을 켜지 못했습니다: {e}", flush=True)
+    if "--arb" in sys.argv:
+        try:
+            paper_store()
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import obs_arbitrage
+
+            obs_arbitrage.start_in_thread()
+            print("차익 관찰: 켜짐 (국내 거래소 4곳 호가, 주문 없음). 화면은 /arb", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"차익 관찰을 켜지 못했습니다: {e}", flush=True)
     print(f"이 컴퓨터에서: http://127.0.0.1:{PORT}", flush=True)
     if PUBLIC:
         print(f"접속 코드: {PIN}   (crypto_live/.pin 에 저장됨. 모든 접속에 필요)", flush=True)

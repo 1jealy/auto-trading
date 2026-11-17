@@ -189,6 +189,27 @@ def show(stats: dict, rep: dict) -> None:
             print("    방향:", s["top_pairs"], "| 코인:", s["top_coins"])
 
 
+def start_in_thread():
+    """화면 서버 안에서 함께 돌릴 때(server.py --arb). 끊기면 30초 뒤 다시 시작한다."""
+    import threading
+
+    def forever() -> None:
+        while True:
+            t0 = time.time()
+            try:
+                store = ArbStore()
+                w = Watch(listed(), store)
+                stats = asyncio.run(w.run(None))
+                store.add_run(t0, time.time(), socket.gethostname(), "server --arb", stats)
+            except Exception as e:  # noqa: BLE001
+                print(f"차익 관찰 오류({type(e).__name__}: {str(e)[:80]}) — 30초 뒤 다시", flush=True)
+            time.sleep(30)
+
+    th = threading.Thread(target=forever, daemon=True, name="arb-watch")
+    th.start()
+    return th
+
+
 def show_sim(rows: list[dict], seconds: float, odd: int | None = None) -> None:
     print(f"\n== 모의 체결 (50만 원씩, {seconds / 60:.0f}분) — 후보/수수료/지연(초) ==")
     print(f"{'후보':16s} {'체결':>5s} {'못함':>5s} {'시간당':>6s} {'이긴비율':>7s} {'신호때':>8s} {'실제평균':>8s} {'합계(원)':>10s} 코인수 · 많이 번/잃은 코인")

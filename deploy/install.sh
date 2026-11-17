@@ -67,7 +67,7 @@ User=$USER_NAME
 WorkingDirectory=$DIR
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-$DIR/.env
-ExecStart=$DIR/.venv/bin/python crypto_live/server.py $PORT --public --engine
+ExecStart=$DIR/.venv/bin/python crypto_live/server.py $PORT --public --engine --arb
 Restart=always
 RestartSec=5
 
