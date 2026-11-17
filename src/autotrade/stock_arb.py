@@ -33,7 +33,8 @@ ETF_PAIRS = [  # 같은 지수(국내 주식형 → 거래세 없음)
     ("122630", "123320", "코스피200 레버리지 (KODEX · TIGER)"),
     ("252670", "252710", "코스피200 곱버스 (KODEX · TIGER)"),
 ]
-FEE = 0.00015          # 증권사 수수료 가정(한쪽, 온라인). 이벤트로 더 싼 곳도 있다.
+FEE = 0.00015          # 증권사 수수료 가정(한쪽, 온라인 보통)
+FEE_MIN = 0.000036     # 최저: 증권사 몫 0(평생 우대 이벤트 등)이고 거래소·예탁원 등 유관기관 수수료(약 0.0036%)만 낼 때
 NOTIONAL = 1_000_000   # 한 번에 100만 원어치로 틈을 잰다(호가 잔량 반영)
 STALE = 3.0            # 3초 넘게 안 바뀐 호가는 비교에서 뺀다
 RATIO_WINDOW = 1800    # ETF 비율의 '평소' = 최근 30분 가운데 값
@@ -105,7 +106,8 @@ def pair_dev(a: Book, b: Book, hist: deque, now: float, fee: float = FEE) -> tup
 
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS gaps (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, dir TEXT, start REAL, dur REAL, max_net REAL, n INTEGER);
+CREATE TABLE IF NOT EXISTS gaps (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, dir TEXT, start REAL, dur REAL, max_net REAL, n INTEGER,
+  max_std REAL);
 CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, start REAL, end REAL, msgs TEXT);
 """
 
@@ -131,28 +133,33 @@ class StockGapWatch:
             k, n = self._fresh("KRX", code, now), self._fresh("NXT", code, now)
             if k and n:
                 for buy, sell, d in ((k, n, "KRX→NXT"), (n, k, "NXT→KRX")):
-                    self._mark("교차", STOCKS[code], d, cross_net(buy, sell, tax=self.tax), now)
+                    self._mark("교차", STOCKS[code], d, cross_net(buy, sell, fee=FEE_MIN, tax=self.tax), now,
+                               cross_net(buy, sell, fee=FEE, tax=self.tax))
         for a, b, name in ETF_PAIRS:
             if code in (a, b):
                 ba, bb = self._fresh("KRX", a, now), self._fresh("KRX", b, now)
                 if ba and bb:
-                    r = pair_dev(ba, bb, self.hist[name], now)
+                    r = pair_dev(ba, bb, self.hist[name], now, fee=FEE_MIN)
                     if r:
-                        self._mark("ETF짝", name, "앞 사고 뒤 팔기" if r[1] == "a" else "뒤 사고 앞 팔기", r[0], now)
+                        self._mark("ETF짝", name, "앞 사고 뒤 팔기" if r[1] == "a" else "뒤 사고 앞 팔기", r[0], now,
+                                   r[0] - 4 * (FEE - FEE_MIN))
 
     def _fresh(self, mkt: str, code: str, now: float) -> Book | None:
         x = self.books.get((mkt, code))
         return x[0] if x and now - x[1] <= STALE else None
 
-    def _mark(self, kind: str, name: str, d: str, net: float | None, now: float) -> None:
+    def _mark(self, kind: str, name: str, d: str, net: float | None, now: float, net_std: float | None = None) -> None:
+        """net: 최저 수수료로 계산(기록 기준), net_std: 보통 수수료로 계산(같이 저장)."""
         key = (kind, name, d)
         if net is not None and net > GAP_MIN:
-            o = self.open.setdefault(key, {"start": now, "max": net, "n": 0})
+            o = self.open.setdefault(key, {"start": now, "max": net, "std": -1.0, "n": 0})
             o["max"], o["n"], o["last"] = max(o["max"], net), o["n"] + 1, now
+            if net_std is not None:
+                o["std"] = max(o["std"], net_std)
         elif key in self.open:
             o = self.open.pop(key)
-            self.db.execute("INSERT INTO gaps (kind,name,dir,start,dur,max_net,n) VALUES (?,?,?,?,?,?,?)",
-                            (kind, name, d, o["start"], now - o["start"], o["max"], o["n"]))
+            self.db.execute("INSERT INTO gaps (kind,name,dir,start,dur,max_net,n,max_std) VALUES (?,?,?,?,?,?,?,?)",
+                            (kind, name, d, o["start"], now - o["start"], o["max"], o["n"], o["std"]))
             self.db.commit()
 
     def close_all(self, now: float) -> None:
@@ -164,6 +171,7 @@ def summary(db_path: Path = STOCK_DB, since: float = 0.0) -> list[dict]:
     if not db_path.exists():
         return []
     db = sqlite3.connect(db_path)
-    rows = db.execute("SELECT kind, name, dir, COUNT(*), AVG(max_net), MAX(max_net), AVG(dur), SUM(dur>1) FROM gaps "
+    rows = db.execute("SELECT kind, name, dir, COUNT(*), AVG(max_net), MAX(max_net), AVG(dur), SUM(dur>1), SUM(max_std>0) FROM gaps "
                       "WHERE start >= ? GROUP BY kind, name, dir ORDER BY COUNT(*) DESC", (since,)).fetchall()
-    return [{"kind": r[0], "name": r[1], "dir": r[2], "n": r[3], "avg": r[4], "max": r[5], "dur": r[6], "over1s": r[7]} for r in rows]
+    return [{"kind": r[0], "name": r[1], "dir": r[2], "n": r[3], "avg": r[4], "max": r[5], "dur": r[6], "over1s": r[7],
+             "n_std": r[8]} for r in rows]

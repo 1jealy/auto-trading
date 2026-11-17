@@ -50,5 +50,6 @@ def test_watch_records_gap_until_it_closes(tmp_path):
     assert ("교차", "삼성전자", "KRX→NXT") in w.open
     w.on(TR_NXT, "005930", Book.make([(70100, 1000)], [(70000, 1000)]), 0.6)  # 닫힘
     assert not w.open
-    (kind, name, d, dur, mx) = w.db.execute("SELECT kind,name,dir,dur,max_net FROM gaps").fetchone()
+    (kind, name, d, dur, mx, std) = w.db.execute("SELECT kind,name,dir,dur,max_net,max_std FROM gaps").fetchone()
     assert (kind, name, d) == ("교차", "삼성전자", "KRX→NXT") and dur == pytest.approx(0.5) and mx > 0.003
+    assert std < mx  # 보통 수수료로는 조금 덜 남는다

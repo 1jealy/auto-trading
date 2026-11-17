@@ -86,11 +86,11 @@ async def run(minutes: float) -> None:
 
 def show(since: float = 0.0) -> None:
     rows = summary(since=since)
-    print("\n== 비용 뺀 뒤에도 남는 틈 (관찰, 수익 계산 아님) ==")
+    print("\n== 비용 뺀 뒤에도 남는 틈 (관찰, 수익 계산 아님) — 최저 수수료(유관기관 0.0036%만) 기준, 괄호는 보통 수수료(0.015%)로도 남은 횟수 ==")
     if not rows:
         print("없음 — 비용(교차: 수수료 2번 + 거래세, ETF 짝: 수수료 4번)을 넘는 틈이 한 번도 안 나왔습니다.")
     for r in rows:
-        print(f"{r['kind']:4s} {r['name'][:28]:28s} {r['dir']:10s} {r['n']:5d}번 · 평균 {r['avg'] * 100:+.3f}% · 최대 {r['max'] * 100:+.3f}% "
+        print(f"{r['kind']:4s} {r['name'][:28]:28s} {r['dir']:10s} {r['n']:5d}번({r['n_std'] or 0}) · 평균 {r['avg'] * 100:+.3f}% · 최대 {r['max'] * 100:+.3f}% "
               f"· 평균 {r['dur']:.1f}초 · 1초 넘게 {r['over1s']}번")
 
 
