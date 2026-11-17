@@ -101,3 +101,66 @@ def test_store_roundtrip():
     st.add_episodes([e])
     r = dict(st.episodes()[0])
     assert r["coin"] == "X" and r["dur_ms"] == pytest.approx(500) and r["closed_by"] == "edge" and r["mean_gross"] == pytest.approx(0.009)
+
+
+# ── 모의 체결 ──
+from autotrade.arb import PaperArb, sim_report  # noqa: E402
+
+FEE0 = {"none": {"a": 0.0, "b": 0.0}}
+
+
+def sim(lat=0.5, thr=0.001):
+    return PaperArb(notional=1_000_000, thresholds={"S": thr}, fees=FEE0, latencies=(lat,))
+
+
+def test_paper_fill_uses_books_after_latency_not_signal_books():
+    s = sim()
+    s.update("X", "a", book(100, 99), now=0.0)
+    s.update("X", "b", book(103, 102), now=0.1)  # 신호: 약 +2%
+    assert s.drain() == [] and len(s.pending["X"]) == 1
+    s.update("X", "b", book(103, 102), now=0.3)  # 지연(0.5초) 전 → 아직 체결 안 함
+    assert s.drain() == []
+    s.update("X", "b", book(100.5, 99.5), now=0.7)  # 지연 뒤: 틈이 사라짐 → 손해로 기록
+    rows = s.drain()
+    assert len(rows) == 1 and rows[0]["net_signal"] > 0.015 and rows[0]["net"] < 0
+
+
+def test_paper_inventory_blocks_same_direction_until_reverse():
+    s = sim(lat=0.0)
+    s.update("X", "a", book(100, 99), now=0.0)
+    s.update("X", "b", book(103, 102), now=0.1)   # 신호 (a 에서 사서 b 에 팖)
+    s.update("X", "b", book(103, 102), now=0.2)   # 체결
+    assert len(s.drain()) == 1
+    s.update("X", "b", book(103, 102), now=0.3)   # 같은 방향: 재고 없음 → 신호 없음
+    s.update("X", "b", book(103, 102), now=0.4)
+    assert s.drain() == [] and not s.pending["X"]
+    s.update("X", "b", book(97, 96), now=1.0)     # 반대 방향 틈 (b 에서 사서 a 에 팖)
+    s.update("X", "b", book(97, 96), now=1.1)
+    assert [r["buy_ex"] for r in s.drain()] == ["b"]
+    s.update("X", "b", book(103, 102), now=2.0)   # 이제 처음 방향이 다시 가능
+    s.update("X", "b", book(103, 102), now=2.1)
+    assert [r["buy_ex"] for r in s.drain()] == ["a"]
+
+
+def test_paper_skips_odd_gaps_and_stale_and_thin_books():
+    s = sim(lat=0.0)
+    s.update("X", "a", book(100, 99), now=0.0)
+    s.update("X", "b", book(120, 110), now=0.1)   # 10% 차이 → 이상한 값
+    assert s.odd >= 1 and not s.pending.get("X")
+    s2 = sim(lat=0.5)
+    s2.update("X", "a", book(100, 99), now=0.0)
+    s2.update("X", "b", book(103, 102), now=0.1)
+    s2.update("X", "b", book(103, 102), now=5.0)  # a 호가가 4.9초 낡음
+    assert s2.drain()[0]["why"] == "호가 낡음"
+    s3 = sim(lat=0.5)
+    s3.update("X", "a", book(100, 99), now=0.0)
+    s3.update("X", "b", book(103, 102), now=0.1)
+    s3.update("X", "b", Book.make([(103, 1)], [(102, 1)]), now=0.7)  # 잔량 102원뿐
+    assert s3.drain()[0]["why"] == "잔량 부족"
+
+
+def test_sim_report():
+    rows = [{"key": "S", "coin": "X", "net": 0.01, "net_signal": 0.012}, {"key": "S", "coin": "Y", "net": -0.002, "net_signal": 0.001},
+            {"key": "S", "coin": "Y", "net": None, "net_signal": 0.003}]
+    r = sim_report(rows, 3600.0, 1_000_000)[0]
+    assert r["filled"] == 2 and r["failed"] == 1 and r["win"] == 0.5 and r["total_krw"] == pytest.approx(8000)

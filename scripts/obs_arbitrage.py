@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import requests  # noqa: E402
 import websockets  # noqa: E402
 
-from autotrade.arb import ARB_DB, EXCHANGES, FEES_STANDARD, PARSERS, ArbStore, Tracker, report  # noqa: E402
+from autotrade.arb import EXCHANGES, PARSERS, ArbStore, PaperArb, Tracker, report, sim_report  # noqa: E402
 
 UA = {"User-Agent": "Mozilla/5.0 (research; public market data)"}
 URLS = {"upbit": "wss://api.upbit.com/websocket/v1", "bithumb": "wss://ws-api.bithumb.com/websocket/v1",
@@ -56,6 +56,7 @@ class Watch:
     def __init__(self, coins_by_ex: dict[str, set[str]], store: ArbStore) -> None:
         self.coins_by_ex, self.store = coins_by_ex, store
         self.tracker = Tracker()
+        self.sim = PaperArb()
         self.msgs = {e: 0 for e in EXCHANGES}
         self.connects = {e: 0 for e in EXCHANGES}
         self.first_msg_ms = {}
@@ -70,6 +71,7 @@ class Watch:
             self.gaps[ex].append(now - self.last_t[k])
         self.last_t[k] = now
         self.tracker.update(coin, ex, book, now)
+        self.sim.update(coin, ex, book, now)
 
     async def feed(self, ex: str) -> None:
         coins = sorted(self.common(ex))
@@ -134,6 +136,9 @@ class Watch:
         eps = self.tracker.drain()
         if eps:
             self.store.add_episodes(eps)
+        rows = self.sim.drain()
+        if rows:
+            self.store.add_sim(rows)
 
     async def run(self, minutes: float | None) -> dict:
         t0 = time.time()
@@ -184,6 +189,18 @@ def show(stats: dict, rep: dict) -> None:
             print("    방향:", s["top_pairs"], "| 코인:", s["top_coins"])
 
 
+def show_sim(rows: list[dict], seconds: float, odd: int | None = None) -> None:
+    print(f"\n== 모의 체결 (50만 원씩, {seconds / 60:.0f}분) — 후보/수수료/지연(초) ==")
+    print(f"{'후보':16s} {'체결':>5s} {'못함':>5s} {'시간당':>6s} {'이긴비율':>7s} {'신호때':>8s} {'실제평균':>8s} {'합계(원)':>10s} 코인수 · 많이 번/잃은 코인")
+    for r in sim_report(rows, seconds):
+        f = lambda v, p=3: "   —  " if v is None else f"{v * 100:+.{p}f}%"  # noqa: E731
+        top = ", ".join(f"{c} {v * 100:+.2f}%" for c, v in r["top"])
+        print(f"{r['key']:16s} {r['filled']:5d} {r['failed']:5d} {r['per_hour']:6.1f} {('—' if r['win'] is None else f'{r['win']:.0%}'):>7s} "
+              f"{f(r['mean_signal']):>8s} {f(r['mean_net']):>8s} {r['total_krw']:>10,.0f} {r['coins']:3d} · {top}")
+    if odd is not None:
+        print(f"수수료 전 3% 넘는 이상한 차이를 본 횟수(거래 안 함): {odd:,}")
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     store = ArbStore()
@@ -196,6 +213,7 @@ def main() -> None:
                                                            "first_msg_ms": {}, "update_gap": {}}
         stats["seconds"] = secs
         show(stats, rep)
+        show_sim(store.sim_trades(), secs)
         return
     minutes = float(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else None
     coins = listed()
@@ -210,6 +228,7 @@ def main() -> None:
     store.add_run(t0, time.time(), socket.gethostname(), "obs_arbitrage", stats)
     rows = [dict(r) for r in store.episodes(t0)]
     show(stats, report(rows, stats["seconds"]))
+    show_sim(store.sim_trades(t0), stats["seconds"], w.sim.odd)
 
 
 if __name__ == "__main__":

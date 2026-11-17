@@ -181,6 +181,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, coin TEXT, buy_ex TEXT, sell_ex TEXT, notional REAL,
   start REAL, dur_ms REAL, max_gross REAL, mean_gross REAL, updates INTEGER, closed_by TEXT);
 CREATE INDEX IF NOT EXISTS ep_start ON episodes(start);
+CREATE TABLE IF NOT EXISTS sim_trades (id INTEGER PRIMARY KEY, key TEXT, coin TEXT, buy_ex TEXT, sell_ex TEXT, t REAL,
+  net_signal REAL, net REAL, why TEXT);
 CREATE TABLE IF NOT EXISTS arb_runs (id INTEGER PRIMARY KEY, start REAL, end REAL, host TEXT, note TEXT, stats TEXT);
 """
 
@@ -204,6 +206,15 @@ class ArbStore:
             [(e.coin, e.buy_ex, e.sell_ex, e.notional, e.start, e.duration_ms, e.max_gross,
               e.sum_gross / max(e.updates, 1), e.updates, e.closed_by) for e in eps])
         self.db.commit()
+
+    def add_sim(self, rows: list[dict]) -> None:
+        if rows:
+            self.db.executemany("INSERT INTO sim_trades (key, coin, buy_ex, sell_ex, t, net_signal, net, why) VALUES (?,?,?,?,?,?,?,?)",
+                                [(r["key"], r["coin"], r["buy_ex"], r["sell_ex"], r["t"], r["net_signal"], r["net"], r["why"]) for r in rows])
+            self.db.commit()
+
+    def sim_trades(self, since: float = 0.0) -> list[dict]:
+        return [dict(r) for r in self.db.execute("SELECT * FROM sim_trades WHERE t >= ? ORDER BY t", (since,))]
 
     def add_run(self, start: float, end: float, host: str, note: str, stats: dict) -> None:
         self.db.execute("INSERT INTO arb_runs (start, end, host, note, stats) VALUES (?,?,?,?,?)",
@@ -262,4 +273,113 @@ def report(rows, seconds: float, fees: dict[str, float] | None = None) -> dict:
                 "top_pairs": sorted(by_pair.items(), key=lambda x: -x[1])[:5],
                 "top_coins": sorted(by_coin.items(), key=lambda x: -x[1])[:8],
             }
+    return out
+
+
+# ---------------------------------------------------------------- 모의 체결 (시험 가동용)
+
+SIM_NOTIONAL = 500_000
+SIM_THRESHOLDS = {"S1": 0.0050, "S2": 0.0020, "S3": 0.0005, "S4": 0.0}
+SIM_FEES = {"일반": FEES_STANDARD, "할인": {e: FEE_DISCOUNT for e in EXCHANGES}}
+SIM_LATENCIES = (0.1, 0.5)
+SIM_MAX_GROSS = 0.03  # 수수료 전 차이가 이보다 크면 이상한 값으로 보고 거래하지 않는다
+
+
+class PaperArb:
+    """신호 → 지연 뒤의 호가로 양쪽 체결을 계산한다. 후보(기준 x 수수료 x 지연)마다 따로 센다.
+
+    재고 규칙: (후보, 코인, 거래소 쌍)마다 마지막으로 한 방향을 기억해 같은 방향은 다시 하지 않는다.
+    """
+
+    def __init__(self, notional: float = SIM_NOTIONAL, thresholds=None, fees=None, latencies=SIM_LATENCIES,
+                 stale: float = STALE, max_gross: float = SIM_MAX_GROSS) -> None:
+        self.notional, self.stale, self.max_gross = notional, stale, max_gross
+        self.variants = [(f"{s}/{fn}/{lat}", thr, fee, lat) for s, thr in (thresholds or SIM_THRESHOLDS).items()
+                         for fn, fee in (fees or SIM_FEES).items() for lat in latencies]
+        self.books: dict[str, dict[str, tuple[Book, float]]] = {}
+        self.pending: dict[str, list[dict]] = {}  # coin → 주문
+        self.last_dir: dict[tuple, str] = {}
+        self.busy: set[tuple] = set()
+        self.out: list[dict] = []
+        self.odd = 0  # 3% 넘는 차이를 본 횟수
+
+    def update(self, coin: str, ex: str, book: Book, now: float) -> None:
+        books = self.books.setdefault(coin, {})
+        books[ex] = (book, now)
+        self._execute(coin, now)
+        fresh = {e: b for e, (b, t) in books.items() if now - t <= self.stale}
+        for other, ob in fresh.items():
+            if other == ex:
+                continue
+            for buy_ex, bb, sell_ex, sb in ((ex, book, other, ob), (other, ob, ex, book)):
+                g = gap(bb, sb, self.notional)
+                if g is None or g.gross <= 0:
+                    continue
+                if g.gross > self.max_gross:
+                    self.odd += 1
+                    continue
+                pair = tuple(sorted((buy_ex, sell_ex)))
+                for key, thr, fee, lat in self.variants:
+                    net = net_after_fees(g.gross, fee[buy_ex], fee[sell_ex])
+                    k = (key, coin, pair)
+                    if net < thr or k in self.busy or self.last_dir.get(k) == buy_ex:
+                        continue
+                    self.busy.add(k)
+                    self.pending.setdefault(coin, []).append(
+                        {"key": key, "coin": coin, "buy_ex": buy_ex, "sell_ex": sell_ex, "t": now, "due": now + lat,
+                         "net_signal": net, "fee": fee, "k": k})
+
+    def _execute(self, coin: str, now: float) -> None:
+        todo = self.pending.get(coin)
+        if not todo:
+            return
+        rest = []
+        for o in todo:
+            if o["due"] > now:
+                rest.append(o)
+                continue
+            self.busy.discard(o["k"])
+            books = self.books[coin]
+            bb, tb = books[o["buy_ex"]]
+            sb, ts = books[o["sell_ex"]]
+            row = {"key": o["key"], "coin": coin, "buy_ex": o["buy_ex"], "sell_ex": o["sell_ex"], "t": o["t"],
+                   "net_signal": o["net_signal"], "net": None, "why": ""}
+            if now - tb > self.stale or now - ts > self.stale:
+                row["why"] = "호가 낡음"
+            else:
+                g = gap(bb, sb, self.notional)
+                if g is None:
+                    row["why"] = "잔량 부족"
+                else:
+                    row["net"] = net_after_fees(g.gross, o["fee"][o["buy_ex"]], o["fee"][o["sell_ex"]])
+                    self.last_dir[o["k"]] = o["buy_ex"]  # 체결됐으면 같은 방향은 막는다
+            self.out.append(row)
+        self.pending[coin] = rest
+
+    def drain(self) -> list[dict]:
+        out, self.out = self.out, []
+        return out
+
+
+def sim_report(rows: list[dict], seconds: float, notional: float = SIM_NOTIONAL) -> list[dict]:
+    hours = max(seconds / 3600, 1e-9)
+    by: dict[str, list[dict]] = {}
+    for r in rows:
+        by.setdefault(r["key"], []).append(r)
+    out = []
+    for key in sorted(by):
+        rs = by[key]
+        done = [r["net"] for r in rs if r["net"] is not None]
+        coins: dict[str, float] = {}
+        for r in rs:
+            if r["net"] is not None:
+                coins[r["coin"]] = coins.get(r["coin"], 0.0) + r["net"]
+        top = sorted(coins.items(), key=lambda x: -abs(x[1]))[:3]
+        out.append({
+            "key": key, "signals": len(rs), "filled": len(done), "failed": len(rs) - len(done),
+            "per_hour": len(done) / hours, "win": sum(x > 0 for x in done) / len(done) if done else None,
+            "mean_net": sum(done) / len(done) if done else None,
+            "mean_signal": sum(r["net_signal"] for r in rs) / len(rs),
+            "total_krw": sum(done) * notional, "coins": len(coins), "top": top,
+        })
     return out
