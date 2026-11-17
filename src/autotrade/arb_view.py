@@ -147,18 +147,30 @@ def compute(rows: list[dict], now: float, blocked: dict[str, set[str]]) -> dict:
         "excluded": excluded, "wallet_err": _wallet["err"], "wallet_t": _wallet["t"],
         "late": table_rows([r for r in late if r["key"][0] == "S"], now - t0 - SKIP, t0, True),
         "real": table_rows([r for r in late if r["key"][0] == "R"], now - t0 - SKIP, t0, True),
-        "real_coins": _real_coins(),
+        "real_coins": _real_coins(since=t0),
         "all": table_rows(rows, now - t0, t0, False),
         "recent": [fmt(r) for r in recent], "worst": [fmt(r) for r in worst],
     }
 
 
-def _real_coins() -> dict:
+def _real_coins(db_path: Path = ARB_DB, since: float = 0.0) -> dict:
+    """R 코인 10개, 옮기는 비용, 그리고 시작 뒤 각 코인에서 본 가장 큰 틈(수수료 전, 관찰 기록에서)."""
     try:
-        d = json.loads((ARB_DB.parent / "arb_real_coins.json").read_text(encoding="utf-8"))
-        return {"coins": d.get("coins", []), "move_pct": d.get("move_pct", {})}
+        d = json.loads((db_path.parent / "arb_real_coins.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"coins": [], "move_pct": {}}
+        return {"coins": [], "move_pct": {}, "max_gap": {}}
+    coins = d.get("coins", [])
+    max_gap: dict[str, float] = {}
+    if coins and db_path.exists():
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        try:
+            q = f"SELECT coin, MAX(max_gross) FROM episodes WHERE start >= ? AND max_gross < 0.03 AND coin IN ({','.join('?' * len(coins))}) GROUP BY coin"
+            max_gap = {c: g for c, g in db.execute(q, [since, *coins])}
+        except sqlite3.Error:
+            pass
+        finally:
+            db.close()
+    return {"coins": coins, "move_pct": d.get("move_pct", {}), "max_gap": max_gap}
 
 
 _cache = {"sig": None, "data": None, "t": 0.0}
@@ -250,7 +262,11 @@ function render(d){
   const pick=(list,p)=>list.filter(r=>r.key.endsWith('/일반/0.1')&&r.key.startsWith(p));
   $('#tiles').innerHTML=pick(d.late,'S').map(tile).join('')||'<p class="muted">처음 5분이 지나면 나와요</p>';
   $('#rtiles').innerHTML=pick(d.real||[],'R').map(tile).join('')||'<p class="muted">처음 5분이 지나면 나와요</p>';
-  $('#real').innerHTML=table(d.real||[], proj, true);
+  const rc0=d.real_coins||{coins:[],move_pct:{},max_gap:{}};
+  $('#real').innerHTML=(d.real&&d.real.length)?table(d.real, proj, true):
+    '<p class="muted">R은 아직 한 번도 거래하지 않았어요. 고장이 아니라, 아래처럼 틈이 옮기는 비용보다 작아서예요(수수료 전 가장 큰 틈 → 한 번 옮기는 비용).</p>'+
+    (rc0.coins.length?'<table><tr><th>코인</th><th>시작 뒤 가장 큰 틈(수수료 전)</th><th>한 번 옮기는 비용</th><th>모자란 만큼</th></tr>'+
+      rc0.coins.map(c=>{const g=rc0.max_gap[c], m=rc0.move_pct[c]; return `<tr><td>${c}</td><td>${g==null?'0.1% 넘는 틈 없음':pct(g,2)}</td><td>${m==null?'—':pct(m,1)}</td><td class="down">${g==null||m==null?'—':pct(g-m,1)}</td></tr>`;}).join('')+'</table>':'');
   const rc=d.real_coins||{coins:[],move_pct:{}};
   $('#realNote').textContent=(rc.coins.length?'코인 10개와 한 번 옮기는 비용(5만 원 거래 대비): '+rc.coins.map(c=>c+(rc.move_pct[c]!=null?' '+(rc.move_pct[c]*100).toFixed(1)+'%':'')).join(', ')+' · ':'')+'한 번에 5만 원 · 쌓이는 방향 거래마다 출금 수수료+원화 1,000원 뺌 · 한쪽만 체결되면 되판 손해 기록 · 필요한 돈 400만 원';
   $('#lateNote').textContent=`${d.late_minutes.toFixed(0)}분 동안의 거래 · 10만 원으로 시작(원화 5만 + 코인 5만, 한 번에 5만 원어치) · `+
