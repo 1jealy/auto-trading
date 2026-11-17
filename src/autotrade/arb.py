@@ -361,6 +361,97 @@ class PaperArb:
         return out
 
 
+REAL_NOTIONAL = 50_000
+REAL_THRESHOLDS = {"R1": 0.0050, "R2": 0.0020, "R3": 0.0005, "R4": 0.0}
+REAL_KRW_MOVE = 1_000  # 원화 옮기는 비용(원)
+REAL_COINS = 10
+REAL_CAPITAL = REAL_COINS * len(EXCHANGES) * 2 * REAL_NOTIONAL  # 400만 원
+
+
+class RealArb(PaperArb):
+    """현실 계산판(R): 정해 둔 코인만, 5만 원씩, 옮기는 비용과 한쪽만 체결된 손해를 넣는다(docs/experiments.md).
+
+    wd_fee: 코인별 출금 수수료(코인 개수). 쌓인 것을 늘리는 거래마다 wd_fee × 가격 + 원화 1,000원을 뺀다.
+    """
+
+    def __init__(self, coins, wd_fee: dict[str, float], notional: float = REAL_NOTIONAL, thresholds=None,
+                 krw_move: float = REAL_KRW_MOVE, **kw) -> None:
+        super().__init__(notional=notional, thresholds=thresholds or REAL_THRESHOLDS, **kw)
+        self.coins, self.wd_fee, self.krw_move = set(coins), dict(wd_fee), krw_move
+        self.pos: dict[tuple, int] = {}  # (후보, 코인, 쌍) → +면 쌍의 앞 거래소에서 산 쪽으로 쌓임
+
+    def update(self, coin: str, ex: str, book: Book, now: float) -> None:
+        """신호 판단에도 옮기는 비용을 넣는다: 쌓이는 방향이면 (순수익 − 옮기는 비용)이 기준 이상일 때만."""
+        if coin not in self.coins:
+            return
+        books = self.books.setdefault(coin, {})
+        books[ex] = (book, now)
+        self._execute(coin, now)
+        fresh = {e: b for e, (b, t) in books.items() if now - t <= self.stale}
+        for other, ob in fresh.items():
+            if other == ex:
+                continue
+            for buy_ex, bb, sell_ex, sb in ((ex, book, other, ob), (other, ob, ex, book)):
+                g = gap(bb, sb, self.notional)
+                if g is None or g.gross <= 0:
+                    continue
+                if g.gross > self.max_gross:
+                    self.odd += 1
+                    continue
+                pair = tuple(sorted((buy_ex, sell_ex)))
+                for key, thr, fee, lat in self.variants:
+                    k = (key, coin, pair)
+                    net = net_after_fees(g.gross, fee[buy_ex], fee[sell_ex]) - self._move_cost(k, buy_ex, sb.bid, coin)
+                    if net < thr or k in self.busy:
+                        continue
+                    self.busy.add(k)
+                    self.pending.setdefault(coin, []).append(
+                        {"key": key, "coin": coin, "buy_ex": buy_ex, "sell_ex": sell_ex, "t": now, "due": now + lat,
+                         "net_signal": net, "fee": fee, "k": k})
+
+    def _move_cost(self, k: tuple, buy_ex: str, price: float, coin: str, commit: bool = False) -> float:
+        """쌓인 것을 늘리는 거래면 (출금 수수료 × 가격 + 원화 이동) / 거래 크기, 줄이는 거래면 0."""
+        step = 1 if buy_ex == k[2][0] else -1
+        cur = self.pos.get(k, 0)
+        if commit:
+            self.pos[k] = cur + step
+        if abs(cur + step) < abs(cur):
+            return 0.0
+        return (self.wd_fee.get(coin, 0.0) * price + self.krw_move) / self.notional
+
+    def _execute(self, coin: str, now: float) -> None:
+        todo = self.pending.get(coin)
+        if not todo:
+            return
+        rest = []
+        for o in todo:
+            if o["due"] > now:
+                rest.append(o)
+                continue
+            self.busy.discard(o["k"])
+            books = self.books[coin]
+            bb, tb = books[o["buy_ex"]]
+            sb, ts = books[o["sell_ex"]]
+            fee_b, fee_s = o["fee"][o["buy_ex"]], o["fee"][o["sell_ex"]]
+            row = {"key": o["key"], "coin": coin, "buy_ex": o["buy_ex"], "sell_ex": o["sell_ex"], "t": o["t"],
+                   "net_signal": o["net_signal"], "net": None, "why": ""}
+            b = market_buy(bb, self.notional) if bb.ok and now - tb <= self.stale else None
+            if b is None or not b.complete or b.qty <= 0:
+                row["why"] = "못 삼"
+            else:
+                s = market_sell(sb, b.qty) if sb.ok and now - ts <= self.stale else None
+                if s is None or not s.complete:
+                    back = market_sell(bb, b.qty)  # 산 쪽만 체결 → 같은 곳에서 되판다
+                    rt = back.krw / b.krw - 1 if back.complete and b.krw > 0 else -0.01
+                    row["net"] = net_after_fees(rt, fee_b, fee_b)
+                    row["why"] = "한쪽만 체결"
+                else:
+                    net = net_after_fees(s.krw / b.krw - 1, fee_b, fee_s)
+                    row["net"] = net - self._move_cost(o["k"], o["buy_ex"], s.krw / b.qty, coin, commit=True)
+            self.out.append(row)
+        self.pending[coin] = rest
+
+
 def sim_report(rows: list[dict], seconds: float, notional: float = SIM_NOTIONAL) -> list[dict]:
     hours = max(seconds / 3600, 1e-9)
     by: dict[str, list[dict]] = {}

@@ -11,15 +11,17 @@ import threading
 import time
 from pathlib import Path
 
-from autotrade.arb import ARB_DB, SIM_NOTIONAL, sim_report
+from autotrade.arb import ARB_DB, REAL_CAPITAL, sim_report
 
 SKIP = 300            # 처음 5분은 '원래 벌어져 있던 차이'라 따로 본다
 SEED, TRADE = 100_000, 50_000   # 10만 원으로 시작: 원화 5만 + 코인 5만, 한 번에 5만 원어치 거래
 PROJECT_AFTER = 1800  # 30분은 지나야 '이대로 가면' 숫자를 보여 준다
 WALLET_TTL = 600      # 입출금 상태는 10분마다 다시 받는다
-NAMES = {"S1": "S1 확실한 것만 (0.50%↑)", "S2": "S2 넉넉한 틈 (0.20%↑)", "S3": "S3 작은 틈 (0.05%↑)", "S4": "S4 본전만 넘으면 (0%↑)"}
+NAMES = {"S1": "S1 확실한 것만 (0.50%↑)", "S2": "S2 넉넉한 틈 (0.20%↑)", "S3": "S3 작은 틈 (0.05%↑)", "S4": "S4 본전만 넘으면 (0%↑)",
+         "R1": "R1 확실한 것만 (0.50%↑)", "R2": "R2 넉넉한 틈 (0.20%↑)", "R3": "R3 작은 틈 (0.05%↑)", "R4": "R4 본전만 넘으면 (0%↑)"}
 EXN = {"upbit": "업비트", "bithumb": "빗썸", "coinone": "코인원", "korbit": "코빗"}
-MAIN_KEYS = ("S1/일반/0.1", "S2/일반/0.1", "S3/일반/0.1", "S4/일반/0.1")
+MAIN_KEYS = ("S1/일반/0.1", "S2/일반/0.1", "S3/일반/0.1", "S4/일반/0.1",
+             "R1/일반/0.1", "R2/일반/0.1", "R3/일반/0.1", "R4/일반/0.1")
 
 
 # ── 입출금 막힌 코인 (빗썸·코인원 공개 자료. 업비트·코빗은 열쇠 없이는 못 봄) ──
@@ -106,7 +108,9 @@ def table_rows(rows: list[dict], seconds: float, t0: float, with_series: bool) -
             "filled": rep["filled"], "failed": rep["failed"], "win": rep["win"],
             "signal": rep["mean_signal"], "net": rep["mean_net"],
             "lost": (rep["mean_signal"] - rep["mean_net"]) if rep["mean_net"] is not None else None,
-            "won": won, "balance": SEED + won,
+            "won": won, "balance": SEED + won, "ret": won / SEED,
+            "ret_cap": won / REAL_CAPITAL if s.startswith("R") else None,
+            "one_side": sum(1 for r in done if r.get("why") == "한쪽만 체결"),
             "worst": nets[0] if nets else None, "best": nets[-1] if nets else None,
             "won_wo_worst": _won(sum(nets) - nets[0]) if nets else None,
             "coins": rep["coins"],
@@ -141,10 +145,20 @@ def compute(rows: list[dict], now: float, blocked: dict[str, set[str]]) -> dict:
         "minutes": (now - t0) / 60, "records": len(rows), "late_minutes": max(0.0, (now - t0 - SKIP) / 60),
         "seed": SEED, "trade": TRADE, "project_after_min": PROJECT_AFTER / 60,
         "excluded": excluded, "wallet_err": _wallet["err"], "wallet_t": _wallet["t"],
-        "late": table_rows(late, now - t0 - SKIP, t0, True) if late else [],
+        "late": table_rows([r for r in late if r["key"][0] == "S"], now - t0 - SKIP, t0, True),
+        "real": table_rows([r for r in late if r["key"][0] == "R"], now - t0 - SKIP, t0, True),
+        "real_coins": _real_coins(),
         "all": table_rows(rows, now - t0, t0, False),
         "recent": [fmt(r) for r in recent], "worst": [fmt(r) for r in worst],
     }
+
+
+def _real_coins() -> dict:
+    try:
+        d = json.loads((ARB_DB.parent / "arb_real_coins.json").read_text(encoding="utf-8"))
+        return {"coins": d.get("coins", []), "move_pct": d.get("move_pct", {})}
+    except (OSError, ValueError):
+        return {"coins": [], "move_pct": {}}
 
 
 _cache = {"sig": None, "data": None, "t": 0.0}
@@ -207,15 +221,15 @@ function spark(series){
   const end=ys[ys.length-1];
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" x2="${W}" y1="${Y(0)}" y2="${Y(0)}" stroke="currentColor" stroke-opacity=".25" stroke-dasharray="3 3"/><polyline points="${pts}" fill="none" stroke="${end>=0?'var(--up)':'var(--down)'}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
 }
-function table(rows, proj){
+function table(rows, proj, real){
   if(!rows.length) return '<p class="muted">아직 기록이 없어요</p>';
-  let h='<table><tr><th>후보</th><th>수수료</th><th>지연</th><th>체결</th><th>못 함</th><th>이긴 비율</th><th>신호 때</th><th>실제 평균</th><th>늦어서 잃은 몫</th><th>10만 원이</th><th>가장 크게 잃은 1번</th><th>그 1번 빼면</th>'+(proj?'<th>이대로 하루</th><th>이대로 한 달</th>':'')+'<th>몰린 방향</th></tr>';
+  let h='<table><tr><th>후보</th><th>수수료</th><th>지연</th><th>체결</th><th>못 함</th><th>이긴 비율</th><th>신호 때</th><th>실제 평균</th><th>늦어서 잃은 몫</th><th>10만 원이</th><th>수익률</th>'+(real?'<th>400만 원 기준</th><th>한쪽만 체결</th>':'')+'<th>가장 크게 잃은 1번</th><th>그 1번 빼면</th>'+(proj?'<th>이대로 하루</th><th>이대로 한 달</th>':'')+'<th>몰린 방향</th></tr>';
   let prev='';
   for(const r of rows){
     const first=r.name!==prev; prev=r.name;
     h+=`<tr${first?' style="border-top:2px solid var(--hair)"':''}><td>${first?r.name:''}</td><td>${r.fee}</td><td>${r.lat}초</td><td>${r.filled.toLocaleString()}</td><td>${r.failed.toLocaleString()}</td>`+
        `<td>${r.win==null?'—':Math.round(r.win*100)+'%'}</td><td>${pct(r.signal)}</td><td class="${cls(r.net)}">${pct(r.net)}</td><td>${pct(r.lost)}</td>`+
-       `<td class="${cls(r.won)}"><b>${krw(r.balance)}</b></td><td class="${cls(r.worst)}">${pct(r.worst,1)}</td><td class="${cls(r.won_wo_worst)}">${r.won_wo_worst==null?'—':won(r.won_wo_worst)}</td>`+
+       `<td class="${cls(r.won)}"><b>${krw(r.balance)}</b></td><td class="${cls(r.ret)}">${pct(r.ret,2)}</td>`+(real?`<td class="${cls(r.ret_cap)}">${pct(r.ret_cap,3)}</td><td>${r.one_side}</td>`:'')+`<td class="${cls(r.worst)}">${pct(r.worst,1)}</td><td class="${cls(r.won_wo_worst)}">${r.won_wo_worst==null?'—':won(r.won_wo_worst)}</td>`+
        (proj?`<td class="${cls(r.day_won)}">${r.day_won==null?'—':won(r.day_won)}</td><td class="${cls(r.month_pct)}">${pct(r.month_pct,1)}</td>`:'')+
        `<td>${r.top_dir?r.top_dir.dir.replace('upbit','업비트').replace('bithumb','빗썸').replace('coinone','코인원').replace('korbit','코빗')+' '+Math.round(r.top_dir.share*100)+'%':'—'}</td></tr>`;
   }
@@ -223,7 +237,7 @@ function table(rows, proj){
 }
 function trades(list){
   if(!list.length) return '<p class="muted">아직 없어요</p>';
-  let h='<table><tr><th>시각</th><th>후보</th><th>코인</th><th>방향</th><th>신호 때</th><th>실제</th><th>번 돈(5만 원 거래)</th></tr>';
+  let h='<table><tr><th>시각</th><th>판</th><th>코인</th><th>방향</th><th>신호 때</th><th>실제</th><th>번 돈(5만 원 거래)</th></tr>';
   for(const r of list) h+=`<tr><td>${hm(r.t)}</td><td>${r.key}</td><td>${r.coin}</td><td>${r.dir}</td><td>${pct(r.signal,2)}</td><td class="${cls(r.net)}">${pct(r.net,2)}</td><td class="${cls(r.won)}">${won(r.won)}</td></tr>`;
   return h+'</table>';
 }
@@ -232,14 +246,19 @@ function render(d){
   $('#head').innerHTML=`<span class="chip">시작 ${hm(d.t0)}</span><span class="chip">${d.minutes.toFixed(0)}분째</span><span class="chip">기록 ${d.records.toLocaleString()}건</span><span class="chip" id="lastago"></span>`;
   last=d;
   const proj=d.late_minutes>=d.project_after_min;
-  const tiles=d.late.filter(r=>['S1/일반/0.1','S2/일반/0.1','S3/일반/0.1','S4/일반/0.1'].includes(r.key));
-  $('#tiles').innerHTML=tiles.length?tiles.map(r=>`<div class="tile"><div class="n">${r.name} · 일반 수수료 · 0.1초</div><div class="big ${cls(r.won)}">${krw(r.balance)}</div><div class="sub">${won(r.won)} · ${r.filled}번 · 이긴 비율 ${r.win==null?'—':Math.round(r.win*100)+'%'}${proj&&r.day_won!=null?' · 이대로 하루 '+won(r.day_won):''}</div>${spark(r.series)}</div>`).join(''):'<p class="muted">처음 5분이 지나면 나와요</p>';
+  const tile=r=>`<div class="tile"><div class="n">${r.name} · 일반 수수료 · 0.1초</div><div class="big ${cls(r.won)}">${pct(r.ret,2)}</div><div class="sub">10만 원 → ${krw(r.balance)} (${won(r.won)})${r.ret_cap!=null?' · 400만 원 기준 '+pct(r.ret_cap,3):''} · ${r.filled}번 · 이긴 비율 ${r.win==null?'—':Math.round(r.win*100)+'%'}${proj&&r.day_won!=null?' · 이대로 하루 '+won(r.day_won):''}</div>${spark(r.series)}</div>`;
+  const pick=(list,p)=>list.filter(r=>r.key.endsWith('/일반/0.1')&&r.key.startsWith(p));
+  $('#tiles').innerHTML=pick(d.late,'S').map(tile).join('')||'<p class="muted">처음 5분이 지나면 나와요</p>';
+  $('#rtiles').innerHTML=pick(d.real||[],'R').map(tile).join('')||'<p class="muted">처음 5분이 지나면 나와요</p>';
+  $('#real').innerHTML=table(d.real||[], proj, true);
+  const rc=d.real_coins||{coins:[],move_pct:{}};
+  $('#realNote').textContent=(rc.coins.length?'코인 10개와 한 번 옮기는 비용(5만 원 거래 대비): '+rc.coins.map(c=>c+(rc.move_pct[c]!=null?' '+(rc.move_pct[c]*100).toFixed(1)+'%':'')).join(', ')+' · ':'')+'한 번에 5만 원 · 쌓이는 방향 거래마다 출금 수수료+원화 1,000원 뺌 · 한쪽만 체결되면 되판 손해 기록 · 필요한 돈 400만 원';
   $('#lateNote').textContent=`${d.late_minutes.toFixed(0)}분 동안의 거래 · 10만 원으로 시작(원화 5만 + 코인 5만, 한 번에 5만 원어치) · `+
     (d.excluded.length?`입출금 막힌 코인 뺌: ${d.excluded.join(', ')}`:'입출금 막힌 코인이 낀 거래 없음')+
     (d.wallet_err?` (입출금 상태 받기 실패: ${d.wallet_err})`:'')+
     (proj?'':` · '이대로 하루/한 달'은 ${d.project_after_min}분이 지나면 나와요`);
-  $('#late').innerHTML=table(d.late, proj);
-  $('#all').innerHTML=table(d.all, false);
+  $('#late').innerHTML=table(d.late, proj, false);
+  $('#all').innerHTML=table(d.all, false, false);
   $('#recent').innerHTML=trades(d.recent);
   $('#worst').innerHTML=trades(d.worst);
 }
@@ -267,9 +286,11 @@ def page() -> str:
         "<div class='chips'><span id='live'>연결 중…</span><span id='head'></span></div>"
         "<p>업비트·빗썸·코인원·코빗의 실제 호가로, 한 곳에서 사서 다른 곳에 바로 파는 거래를 계산만 해요. 주문은 내지 않아요. "
         "숫자는 1초마다 그 자리에서 바뀌어요(페이지 전체를 새로 고치지 않음). 수수료는 가정치(일반: 업비트 0.05%·빗썸 0.25%·코인원·코빗 0.20% / 할인: 모두 0.05%).</p>"
-        "<h2>10만 원으로 시작했다면 — 일반 수수료, 0.1초 지연</h2><div class='tiles' id='tiles'></div>"
-        "<h2>처음 5분을 뺀 것 — 이 표가 진짜</h2><p id='lateNote'></p><div class='card' id='late'></div>"
-        "<h2>최근 거래 20개 (일반 수수료·0.1초, S1~S4)</h2><div class='card' id='recent'></div>"
+        "<h2>지금 수익률 — 기존판(S): 들고 있는 코인·옮기는 비용 무시</h2><div class='tiles' id='tiles'></div>"
+        "<h2>지금 수익률 — 현실 계산판(R): 코인 10개만, 옮기는 비용·한쪽만 체결 손해 포함</h2><div class='tiles' id='rtiles'></div>"
+        "<h2>기존판(S) 자세히 — 처음 5분 뺌</h2><p id='lateNote'></p><div class='card' id='late'></div>"
+        "<h2>현실 계산판(R) 자세히 — 처음 5분 뺌</h2><p id='realNote'></p><div class='card' id='real'></div>"
+        "<h2>최근 거래 20개 (일반 수수료·0.1초, S와 R)</h2><div class='card' id='recent'></div>"
         "<h2>가장 크게 잃은 거래 5개</h2><p>한 번 크게 잃으면 작은 이익 수십 번이 사라져요. 신호 때는 이익이었는데 체결해 보니 손해인 거래가 여기 모여요.</p>"
         "<div class='card' id='worst'></div>"
         "<details><summary>처음부터 전체 (시작할 때 이미 벌어져 있던 차이가 섞여 있음)</summary><div class='card' id='all'></div></details>"

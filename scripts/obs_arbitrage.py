@@ -25,7 +25,9 @@ sys.path.insert(0, str(ROOT / "src"))
 import requests  # noqa: E402
 import websockets  # noqa: E402
 
-from autotrade.arb import EXCHANGES, PARSERS, ArbStore, PaperArb, Tracker, report, sim_report  # noqa: E402
+from autotrade.arb import (EXCHANGES, PARSERS, REAL_COINS, REAL_KRW_MOVE, REAL_NOTIONAL, ArbStore, PaperArb, RealArb, Tracker, report,  # noqa: E402
+                           sim_report)
+from autotrade.paper.store import DATA_DIR  # noqa: E402
 
 UA = {"User-Agent": "Mozilla/5.0 (research; public market data)"}
 URLS = {"upbit": "wss://api.upbit.com/websocket/v1", "bithumb": "wss://ws-api.bithumb.com/websocket/v1",
@@ -52,11 +54,45 @@ def listed() -> dict[str, set[str]]:
     return out
 
 
+def real_setup(coins_by_ex: dict[str, set[str]]) -> tuple[list[str], dict[str, float]]:
+    """현실 계산판(R) 코인: 업비트·빗썸·코인원 모두에 있고 코인원 출금 수수료를 아는 코인 중 업비트 24시간 거래대금 상위 10개."""
+    fees = {}
+    for x in requests.get("https://api.coinone.co.kr/public/v2/currencies", headers=UA, timeout=15).json().get("currencies", []):
+        try:
+            fees[x["symbol"].upper()] = float(x["withdrawal_fee"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    common = sorted((coins_by_ex.get("upbit", set()) & coins_by_ex.get("bithumb", set()) & coins_by_ex.get("coinone", set())) & set(fees))
+    value, price = {}, {}
+    for i in range(0, len(common), 100):
+        part = common[i:i + 100]
+        for t in requests.get("https://api.upbit.com/v1/ticker", params={"markets": ",".join(f"KRW-{c}" for c in part)},
+                              headers=UA, timeout=15).json():
+            value[t["market"][4:]] = float(t.get("acc_trade_price_24h") or 0)
+            price[t["market"][4:]] = float(t.get("trade_price") or 0)
+    coins = sorted(value, key=lambda c: -value[c])[:REAL_COINS]
+    try:
+        (DATA_DIR / "arb_real_coins.json").write_text(json.dumps({"t": time.time(), "coins": coins,
+                                                                  "wd_fee": {c: fees[c] for c in coins},
+                                                                  "move_pct": {c: (fees[c] * price[c] + REAL_KRW_MOVE) / REAL_NOTIONAL
+                                                                               for c in coins}}, ensure_ascii=False))
+    except OSError:
+        pass
+    return coins, {c: fees[c] for c in coins}
+
+
 class Watch:
     def __init__(self, coins_by_ex: dict[str, set[str]], store: ArbStore) -> None:
         self.coins_by_ex, self.store = coins_by_ex, store
         self.tracker = Tracker()
         self.sim = PaperArb()
+        self.real = None
+        try:
+            coins, wd = real_setup(coins_by_ex)
+            self.real = RealArb(coins, wd)
+            print(f"현실 계산판(R) 코인 {len(coins)}개: {', '.join(coins)}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"현실 계산판(R)을 켜지 못했습니다({type(e).__name__}: {str(e)[:60]}) — 기존판(S)만", flush=True)
         self.msgs = {e: 0 for e in EXCHANGES}
         self.connects = {e: 0 for e in EXCHANGES}
         self.first_msg_ms = {}
@@ -72,6 +108,8 @@ class Watch:
         self.last_t[k] = now
         self.tracker.update(coin, ex, book, now)
         self.sim.update(coin, ex, book, now)
+        if self.real is not None:
+            self.real.update(coin, ex, book, now)
 
     async def feed(self, ex: str) -> None:
         coins = sorted(self.common(ex))
@@ -136,7 +174,7 @@ class Watch:
         eps = self.tracker.drain()
         if eps:
             self.store.add_episodes(eps)
-        rows = self.sim.drain()
+        rows = self.sim.drain() + (self.real.drain() if self.real is not None else [])
         if rows:
             self.store.add_sim(rows)
 

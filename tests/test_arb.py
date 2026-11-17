@@ -164,3 +164,35 @@ def test_sim_report():
             {"key": "S", "coin": "Y", "net": None, "net_signal": 0.003}]
     r = sim_report(rows, 3600.0, 1_000_000)[0]
     assert r["filled"] == 2 and r["failed"] == 1 and r["win"] == 0.5 and r["total_krw"] == pytest.approx(8000)
+
+
+def test_real_arb_move_cost_reverse_free_and_one_side():
+    from autotrade.arb import RealArb
+
+    fees = {"a": 0.0, "b": 0.0}
+    r = RealArb(["X"], {"X": 0.5}, notional=50_000, thresholds={"R4": 0.0}, fees={"zero": fees}, latencies=(0.1,), krw_move=0)
+    cheap, dear = book(ask=1000, bid=999), book(ask=1026, bid=1025)  # 2.5% 차이: 옮기는 비용(약 1%)을 넘음
+    r.update("Y", "a", cheap, 0.0)  # 정해 둔 코인이 아니면 무시
+    assert not r.books
+    r.update("X", "a", cheap, 0.0)
+    r.update("X", "b", dear, 0.0)
+    r.update("X", "b", book(ask=1001, bid=1000), 0.15)  # 차이가 사라짐(같은 방향 새 신호 없음)
+    r.update("X", "a", cheap, 0.2)  # 지연 지나 체결: 0.1초 뒤 호가(b=1000)로 계산
+    t1 = r.drain()[0]
+    assert t1["net"] == pytest.approx(1000 / 1000 - 1 - 0.5 * 1000 / 50_000, abs=1e-3)  # 쌓이는 쪽: 옮기는 비용
+    small = book(ask=990, bid=989)  # 이번엔 b 가 1% 싸다: 옮기는 비용이 없으니(줄이는 쪽) 신호
+    r.update("X", "b", small, 1.0)
+    r.update("X", "b", small, 1.2)
+    rev = [x for x in r.drain() if x["buy_ex"] == "b"][0]
+    assert rev["net"] == pytest.approx(999 / 990 - 1, abs=1e-3)  # 쌓인 것을 줄이는 쪽: 비용 없음
+    r.update("X", "a", cheap, 2.0)
+    r.update("X", "b", book(ask=1006, bid=1005), 2.0)  # 0.5% 차이 < 옮기는 비용 → 신호 없음
+    r.update("X", "b", book(ask=1006, bid=1005), 2.5)
+    assert r.drain() == []
+    # 판 쪽 호가가 낡으면 산 쪽만 체결 → 같은 곳에서 되판 손해
+    r2 = RealArb(["X"], {"X": 0.0}, thresholds={"R4": 0.0}, fees={"zero": fees}, latencies=(0.1,), krw_move=0)
+    r2.update("X", "a", cheap, 0.0)
+    r2.update("X", "b", book(ask=1011, bid=1010), 0.0)
+    r2.update("X", "a", cheap, 5.0)
+    one = r2.drain()[0]
+    assert one["why"] == "한쪽만 체결" and one["net"] < 0
