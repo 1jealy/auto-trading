@@ -63,3 +63,16 @@ def test_entry_requires_recent_squeeze_and_breakout():
     last = d.iloc[-1]
     assert bool(last["recent_squeeze"]) and last["Close"] > last["dc_high"]
     assert bool(last["entry"]) == bool(last["Close"] > last["sma"])
+
+
+def test_breakout_trend_positions_exits_only_below_sma():
+    import numpy as np
+    import pandas as pd
+
+    from autotrade.breakout import breakout_trend_positions
+
+    d = pd.DataFrame({"Close": [10, 12, 11, 9, 13], "sma": [11, 11, 10, 10, 10],
+                      "entry": [False, True, False, False, True]})
+    pos = breakout_trend_positions(d, 0, 5)
+    # 1에서 사고, 2는 추적 손절이 없으니 계속(11 > 10), 3에서 종가 9 < 10 → 판다, 4는 기간 끝
+    assert list(pos) == [False, True, True, False, False]

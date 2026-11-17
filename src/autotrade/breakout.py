@@ -102,3 +102,19 @@ def equity_from_positions(d: pd.DataFrame, pos: np.ndarray, side_cost: float) ->
             v *= o[j + 1] / o[j]
         value[j + 1] = v
     return pd.Series(value, index=idx), pd.DataFrame(trades, columns=["entry", "exit", "bars", "net"])
+
+
+def breakout_trend_positions(d: pd.DataFrame, first: int, last: int) -> np.ndarray:
+    """#28: #8과 같이 돌파로 사되, 파는 건 '종가 < 60일 평균' 하나만(추적 손절 없음)."""
+    cl, sma, ent = (d[c].to_numpy() for c in ("Close", "sma", "entry"))
+    pos = np.zeros(len(d), dtype=bool)
+    holding = False
+    for t in range(len(d)):
+        if holding and cl[t] < sma[t]:
+            holding = False
+        elif not holding and first <= t < last and bool(ent[t]):
+            holding = True
+        if t >= last - 1:
+            holding = False
+        pos[t] = holding
+    return pos
