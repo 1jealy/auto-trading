@@ -191,6 +191,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._redirect("/paper.html")
         if path in ("/arb", "/arb.html"):
             return self._arb()
+        if path == "/api/arb":
+            return self._arb(data=True)
         if path == "/api/account":
             return self._account()
         if path == "/api/server":
@@ -218,17 +220,17 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(HTTPStatus.NOT_FOUND, {"error": "계좌 파일이 없습니다"})
 
     # ── 모의 투자 기록 (읽기 전용) ──
-    def _arb(self):
-        """국내 거래소 차익 모의 체결(시험 가동) 화면. 접속 코드 뒤에 있다(_guard)."""
+    def _arb(self, data: bool = False):
+        """국내 거래소 차익 모의 체결(시험 가동) 화면과 숫자(/api/arb). 접속 코드 뒤에 있다(_guard)."""
         try:
             paper_store()  # src 경로 준비
-            from autotrade.arb_view import page
+            from autotrade.arb_view import page, summary_json
 
-            body, code = page().encode(), HTTPStatus.OK
+            body, code = (summary_json() if data else page().encode()), HTTPStatus.OK
         except Exception as e:  # noqa: BLE001
             body, code = f"차익 기록을 읽지 못했습니다: {e}".encode(), HTTPStatus.INTERNAL_SERVER_ERROR
         self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8" if data else "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
